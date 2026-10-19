@@ -1,0 +1,78 @@
+name: Terraform
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
+  TF_VERSION: 1.16.6
+
+defaults:
+  run:
+    shell: bash # con shell explícito, GitHub agrega pipefail: un plan que falla no se esconde detrás de tee
+    working-directory: terraform/organization
+
+jobs:
+  validate:
+    name: init + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: fmt
+        run: terraform fmt -check -recursive ..
+
+      - name: init
+        run: terraform init -backend=false
+
+      - name: validate
+        run: terraform validate
+
+  plan:
+    name: plan
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      # Credenciales de AWS Academy: vencen con la sesión del laboratorio, hay que
+      # renovarlas en Settings → Secrets antes de correr el pipeline.
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Verificar credenciales
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "::error::Faltan los secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY y AWS_SESSION_TOKEN."
+            exit 1
+          fi
+          aws sts get-caller-identity --query Arn --output text
+
+      - name: init
+        run: terraform init
+
+      - name: plan
+        run: |
+          terraform plan -no-color -lock=false -out=tfplan | tee plan.txt
+          {
+            echo '### terraform plan'
+            echo '```'
+            grep -E '^(Plan:|No changes)' plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

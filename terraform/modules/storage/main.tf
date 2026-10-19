@@ -1,0 +1,81 @@
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+resource "aws_s3_bucket" "this" {
+  bucket           = format("%s-%s-%s-an", var.name_prefix, data.aws_caller_identity.current.account_id, data.aws_region.current.region)
+  bucket_namespace = "account-regional"
+  force_destroy    = true
+}
+
+resource "aws_s3_bucket_public_access_block" "this" {
+  bucket = aws_s3_bucket.this.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
+  bucket = aws_s3_bucket.this.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "this" {
+  bucket = aws_s3_bucket.this.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+  bucket = aws_s3_bucket.this.id
+
+  rule {
+    id     = "noncurrent-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.noncurrent_version_days
+    }
+  }
+
+  dynamic "rule" {
+    for_each = var.transitions
+
+    content {
+      id     = rule.key
+      status = "Enabled"
+
+      filter {
+        prefix = rule.value.prefix
+      }
+
+      dynamic "transition" {
+        for_each = rule.value.transitions
+
+        content {
+          days          = transition.value.days
+          storage_class = transition.value.storage_class
+        }
+      }
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.this]
+}
+
+resource "aws_s3_object" "artifact" {
+  bucket      = aws_s3_bucket.this.id
+  key         = "artifacts/${basename(var.artifact_path)}"
+  source      = var.artifact_path
+  source_hash = filemd5(var.artifact_path)
+}
+

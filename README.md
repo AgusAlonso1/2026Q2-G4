@@ -4,34 +4,102 @@ Cloud Computing · ITBA · 2026Q2 · Grupo 4
 
 TODO: una línea de qué es el sistema y link a la arquitectura.
 
-## Arquitectura
-
 TODO: diagrama actualizado (`docs/arquitectura.png`), alineado con este código.
 
-## Estructura
+TODO: flujo de datos en pasos numerados (frontend → login → API → base → archivador).
 
+El despliegue se hace desde **GitHub Actions**: el workflow **Deploy** aplica todo el Terraform
+en la cuenta de AWS cuyos secrets tenga el repositorio, y **Destroy** lo borra todo.
+
+---
+
+## Prerrequisitos
+
+| Herramienta | Versión / nota |
+|---|---|
+| Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
+| AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`), sólo para correr desde una máquina local |
+| Cuenta | AWS Academy: usa `LabRole` y `LabInstanceProfile`, que ya existen en el laboratorio |
+
+Para desplegar desde GitHub Actions no hace falta nada instalado localmente: alcanza con los
+secrets del paso 1.
+
+---
+
+## Integrantes
+
+| Nombre | Legajo |
+|---|---|
+| TODO | |
+
+---
+
+## Pasos a seguir
+
+### 1. Configurar secrets
+
+En el repositorio, **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Para qué |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Access key del laboratorio de AWS Academy |
+| `AWS_SECRET_ACCESS_KEY` | Secret access key del laboratorio |
+| `AWS_SESSION_TOKEN` | Session token del laboratorio |
+
+Los tres salen de **AWS Details → AWS CLI** en el laboratorio y vencen con la sesión: hay que
+volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
+
+### 2. Workflows
+
+| Workflow | Cuándo corre | Qué hace |
+|---|---|---|
+| **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
+| **Deploy** | A mano, escribiendo `deploy` | `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
+| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después el bucket del state |
+
+Deploy y Destroy comparten un grupo de `concurrency`: nunca corren a la vez sobre el mismo state.
+
+Los workflows de la cátedra (`terraform-format`, `terraform-docs`, `tfsec`) corren en paralelo
+en cada pull request. `terraform-docs` regenera los README de `terraform/modules/` y hace commit
+en la rama del PR: hacer `git pull` antes de seguir pusheando.
+
+### 3. Desplegar
+
+1. Con los secrets cargados: **Actions → Deploy → Run workflow** → rama `main` → escribir
+   `deploy`. Mergear no despliega nada.
+2. Esperar el run en verde. El primer apply tarda más que los siguientes: RDS Multi-AZ sola
+   lleva varios minutos.
+3. Abrir el resumen del run: tiene `website_url` (frontend), `api_url` y `login_url`.
+
+### 4. Probar
+
+TODO: `curl <api_url>/health`, crear un usuario en Cognito con
+`aws cognito-idp admin-create-user --user-pool-id <terraform output cognito>` y entrar por
+`website_url`.
+
+### 5. Destruir al terminar
+
+**Actions → Destroy → Run workflow** → escribir `destroy`.
+
+Borra todos los recursos y, cuando el state quedó vacío, también el bucket del state (ver
+[Estado](#estado)). No queda nada del TP en la cuenta.
+
+### Desde una máquina local
+
+Con las credenciales del laboratorio en `~/.aws/credentials` (o en variables de entorno), los
+mismos pasos que el pipeline:
+
+```bash
+make init      # crea el bucket del state si no existe e inicializa terraform/organization
+make plan      # deja el plan en terraform/organization/tfplan
+make apply     # aplica ese plan
+make destroy   # pide confirmación; borra también el bucket del state
 ```
-terraform/
-├── organization/      # composición raíz: acá se corre terraform
-└── modules/           # módulos propios
-    ├── security_groups/
-    ├── storage/       # bucket privado: archivo del ledger y binarios
-    ├── website/       # bucket público: frontend
-    ├── database/
-    ├── load_balancer/
-    ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
-    └── service/       # launch template + ASG, usado para API y archivador
-apps/
-├── web/               # frontend estático (lo sube modules/website)
-└── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
-artifacts/             # binarios que se suben a S3
-```
 
-## Paso a paso
+`make help` lista el resto (`fmt`, `fmt-check`, `validate`, `clean`). Local y pipeline usan el
+mismo state, así que lo desplegado desde un lado se ve y se destruye desde el otro.
 
-TODO: requisitos (Terraform >= 1.9, AWS CLI, credenciales de AWS Academy), y los
-comandos en orden: `make init`, `make plan`, `make apply`, cómo probar la API y
-`make destroy`.
+---
 
 ## Módulos
 
@@ -96,19 +164,53 @@ Para cerrar sesión, el frontend borra los tokens y redirige a `logout_url`. Cog
 `apps/web/`. Los datos para la API (`issuer`, `client_id`) y el `user_pool_id` para crear
 usuarios por CLI están en `terraform output cognito`.
 
-## Pipeline
-
-`.github/workflows/terraform.yml` corre en cada pull request:
-
-1. `validate`: `fmt -check`, `init -backend=false` y `validate`. No necesita AWS.
-2. `plan`: `init` y `plan` contra la cuenta de AWS Academy. Usa los secrets
-   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y `AWS_SESSION_TOKEN`, que hay que
-   renovar con cada sesión del laboratorio.
-
-Los workflows de la cátedra (`terraform-format`, `terraform-docs`, `tfsec`) corren en
-paralelo. `terraform-docs` regenera los README de `terraform/modules/` y hace commit en
-la rama del PR: hacer `git pull` antes de seguir pusheando.
-
 ## Estado
 
-TODO: por qué el state es local y qué implica.
+El state vive en S3, en `ledger-tfstate-<cuenta>-us-east-1-an`, con la key
+`tp3/terraform.tfstate`: un backend remoto, como recomienda la teórica de Terraform (clase 10,
+"Almacenamiento del Estado"). Tiene que ser remoto porque Deploy y Destroy corren en GitHub
+Actions: con state local se perdería al terminar cada job, el siguiente apply intentaría crear
+todo de nuevo y Destroy no tendría qué destruir.
+
+- **Lo crea `make init`, no Terraform.** El backend necesita el bucket antes del `init`, así que
+  no puede ser un recurso del mismo state. `make init` lo crea con la AWS CLI
+  ([`scripts/state-bucket.sh`](scripts/state-bucket.sh)) si no existe
+  (versionado, cifrado y sin acceso público, que S3 aplica por defecto) y le pasa el nombre al
+  backend con `-backend-config`. Por eso [`backend.tf`](terraform/organization/backend.tf) no
+  tiene `bucket`.
+- **El nombre lleva la cuenta**, en el namespace regional de la cuenta (`-an`), igual que los
+  otros dos buckets: el mismo código despliega en la cuenta del grupo y en la de la cátedra sin
+  editar nada, y nadie más puede ocupar ese nombre.
+- **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). No hace
+  falta una tabla de DynamoDB (la teórica muestra S3 + DynamoDB, que era lo necesario antes de
+  1.10). El `plan` de los pull requests corre con `-lock=false`: no escribe el state, y así no
+  espera a un deploy en curso.
+- **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
+  quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
+  próximo `make init` (Deploy o el plan de un pull request) lo vuelve a crear.
+
+---
+
+## Mapa del repositorio
+
+```
+.
+├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
+├── Makefile               # init (con el bucket del state), plan, apply, destroy, fmt, validate
+├── scripts/
+│   └── state-bucket.sh    # crea y borra el bucket del state
+├── terraform/
+│   ├── organization/      # composición raíz: acá se corre terraform
+│   └── modules/           # módulos propios
+│       ├── security_groups/
+│       ├── storage/       # bucket privado: archivo del ledger y binarios
+│       ├── website/       # bucket público: frontend
+│       ├── database/
+│       ├── load_balancer/
+│       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
+│       └── service/       # launch template + ASG, usado para API y archivador
+├── apps/
+│   ├── web/               # frontend estático (lo sube modules/website)
+│   └── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
+└── artifacts/             # binarios que se suben a S3
+```

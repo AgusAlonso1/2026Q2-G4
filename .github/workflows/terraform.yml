@@ -65,7 +65,8 @@ jobs:
           aws sts get-caller-identity --query Arn --output text
 
       - name: init
-        run: terraform init
+        working-directory: .
+        run: make init
 
       - name: plan
         run: |

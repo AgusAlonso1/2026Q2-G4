@@ -4,7 +4,7 @@ output "vpc_id" {
 }
 
 output "subnet_ids" {
-  description = "Subredes por capa (decisiones/0007)."
+  description = "Subredes por capa."
   value = {
     public  = module.vpc.public_subnets
     app     = module.vpc.private_subnets

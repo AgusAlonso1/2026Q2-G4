@@ -11,7 +11,7 @@ variable "aws_region" {
 }
 
 variable "vpc_cidr" {
-  description = "CIDR de la VPC (decisiones/0007). Las subredes se derivan de él en locals.tf."
+  description = "CIDR de la VPC. Las subredes se derivan de él en locals.tf."
   type        = string
   default     = "10.0.0.0/16"
 }
@@ -59,13 +59,13 @@ variable "db_engine_version" {
 }
 
 variable "db_instance_class" {
-  description = "Clase de la instancia RDS. La más chica: la demo es funcional, no de carga (decisiones/0004)."
+  description = "Clase de la instancia RDS. La más chica: la demo es funcional, no de carga."
   type        = string
   default     = "db.t3.micro"
 }
 
 variable "db_multi_az" {
-  description = "Standby en la segunda AZ (decisiones/0004). En false el apply tarda la mitad: sólo para probar."
+  description = "Standby en la segunda AZ: la base sigue disponible si se cae una zona. En false el apply tarda la mitad: sólo para probar."
   type        = bool
   default     = true
 }

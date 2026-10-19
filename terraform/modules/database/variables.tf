@@ -35,6 +35,6 @@ variable "instance_class" {
 }
 
 variable "multi_az" {
-  description = "Standby sincrónica en la segunda AZ (decisiones/0004)."
+  description = "Standby sincrónica en la segunda AZ."
   type        = bool
 }

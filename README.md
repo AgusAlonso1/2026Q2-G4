@@ -156,6 +156,9 @@ desde S3.
 4. El frontend valida el `state`, guarda los tokens y limpia la URL.
 5. El frontend llama a la API con `Authorization: Bearer <access_token>`. La API valida la
    firma contra `<issuer>/.well-known/jwks.json` y comprueba `client_id` y `token_use=access`.
+6. La primera vez, `GET /sesiones/actual` devuelve `cuenta_id: null` y el frontend crea la cuenta
+   con `POST /cuentas`. La cuenta queda ligada al `sub` del usuario: cada usuario tiene una sola,
+   y es la única que puede leer y operar (si no, 403).
 
 Para cerrar sesión, el frontend borra los tokens y redirige a `logout_url`. Cognito vuelve por
 `/logout` de API Gateway, porque tampoco acepta logout URLs HTTP.
@@ -167,9 +170,7 @@ usuarios por CLI están en `terraform output cognito`.
 ## Estado
 
 El state vive en S3, en `ledger-tfstate-<cuenta>-us-east-1-an`, con la key
-`tp3/terraform.tfstate`: un backend remoto, como recomienda la teórica de Terraform (clase 10,
-"Almacenamiento del Estado"). Tiene que ser remoto porque Deploy y Destroy corren en GitHub
-Actions: con state local se perdería al terminar cada job, el siguiente apply intentaría crear
+`tp3/terraform.tfstate`. Tiene que ser remoto porque Deploy y Destroy corren en GitHub Actions: con state local se perdería al terminar cada job, el siguiente apply intentaría crear
 todo de nuevo y Destroy no tendría qué destruir.
 
 - **Lo crea `make init`, no Terraform.** El backend necesita el bucket antes del `init`, así que
@@ -182,8 +183,7 @@ todo de nuevo y Destroy no tendría qué destruir.
   otros dos buckets: el mismo código despliega en la cuenta del grupo y en la de la cátedra sin
   editar nada, y nadie más puede ocupar ese nombre.
 - **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). No hace
-  falta una tabla de DynamoDB (la teórica muestra S3 + DynamoDB, que era lo necesario antes de
-  1.10). El `plan` de los pull requests corre con `-lock=false`: no escribe el state, y así no
+  falta una tabla de DynamoDB. El `plan` de los pull requests corre con `-lock=false`: no escribe el state, y así no
   espera a un deploy en curso.
 - **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
   quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
@@ -203,14 +203,14 @@ todo de nuevo y Destroy no tendría qué destruir.
 │   ├── organization/      # composición raíz: acá se corre terraform
 │   └── modules/           # módulos propios
 │       ├── security_groups/
-│       ├── storage/       # bucket privado: archivo del ledger y binarios
+│       ├── storage/       # bucket privado: archivo del ledger
 │       ├── website/       # bucket público: frontend
 │       ├── database/
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
 │       └── service/       # launch template + ASG, usado para API y archivador
-├── apps/
-│   ├── web/               # frontend estático (lo sube modules/website)
-│   └── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
-└── artifacts/             # binarios que se suben a S3
+└── apps/
+    ├── ledger/            # backend en Go: binarios api y archivador, imagen con su Dockerfile
+    ├── web/               # frontend estático (lo sube modules/website)
+    └── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
 ```

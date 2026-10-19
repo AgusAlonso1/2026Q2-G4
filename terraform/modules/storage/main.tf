@@ -72,10 +72,3 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
   depends_on = [aws_s3_bucket_versioning.this]
 }
 
-resource "aws_s3_object" "artifact" {
-  bucket      = aws_s3_bucket.this.id
-  key         = "artifacts/${basename(var.artifact_path)}"
-  source      = var.artifact_path
-  source_hash = filemd5(var.artifact_path)
-}
-

@@ -46,12 +46,6 @@ variable "instance_type" {
   default     = "t3.micro"
 }
 
-variable "artifact_file" {
-  description = "Nombre del tar.gz de binarios dentro de artifacts/."
-  type        = string
-  default     = "ledger-591d63e.tar.gz"
-}
-
 variable "db_engine_version" {
   description = "Versión de PostgreSQL. Sólo el major: RDS elige el último minor disponible."
   type        = string

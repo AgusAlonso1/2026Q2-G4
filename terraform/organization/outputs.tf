@@ -19,7 +19,7 @@ output "nat_public_ip" {
 }
 
 output "bucket_name" {
-  description = "Bucket del proyecto: binarios y archivo del ledger."
+  description = "Bucket del proyecto: archivo del ledger."
   value       = module.storage.bucket_name
 }
 

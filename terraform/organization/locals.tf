@@ -38,7 +38,7 @@ locals {
       subnet_ids        = module.vpc.private_subnets
       security_group_id = module.security_groups.ids.app
       min_count         = 2
-      max_count         = 6
+      max_count         = 5 # el ASG admite max_count + 1, y AWS Academy no deja más de 6
       cpu_target        = 60
       schedule          = {}
       environment = {

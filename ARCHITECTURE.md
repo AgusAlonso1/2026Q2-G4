@@ -56,7 +56,7 @@ subredes:
 | | API | Archivador |
 |---|---|---|
 | Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet |
-| Tareas | 2 a 6, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
+| Tareas | 2 a 5, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
 | Instancias | Las que hagan falta para esas tareas | 0 fuera de la ventana |
 | Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 |
 
@@ -89,9 +89,10 @@ cuenta, y por eso ahí la política lista los buckets.
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas y suma
 tareas nuevas mientras haya lugar en el ASG, que admite una instancia más que el máximo de
-tareas (con las dos tareas habituales de la API llega al doble). Una tarea nueva de la API
-recibe tráfico recién cuando pasa el health check del NLB, y si las nuevas no arrancan, el
-circuit breaker vuelve solo a la revisión anterior. Eso vale mientras la revisión nueva no haya
+tareas (con las dos tareas habituales de la API llega al doble). Por eso la API llega a 5
+tareas y no más: su ASG queda en 6, el máximo que AWS Academy deja poner en un ASG. Una
+tarea nueva de la API recibe tráfico recién cuando pasa el health check del NLB, y si las
+nuevas no arrancan, el circuit breaker vuelve solo a la revisión anterior. Eso vale mientras la revisión nueva no haya
 aplicado una migración: un binario no arranca contra una base con migraciones que no conoce,
 así que las tareas viejas que siguen corriendo no se caen, pero las que ECS intente levantar con
 la revisión anterior fallan, y la salida es otro deploy hacia adelante. El tope de conexiones a

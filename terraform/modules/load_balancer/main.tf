@@ -1,7 +1,7 @@
 resource "aws_lb" "this" {
   name               = "${var.name_prefix}-nlb"
   load_balancer_type = "network"
-  internal           = false
+  internal           = false #tfsec:ignore:aws-elb-alb-not-public el navegador llega a la API por este NLB
   subnets            = var.public_subnet_ids
 
   security_groups = [var.security_group_id]

@@ -229,6 +229,18 @@ nuevo y Destroy no tendría qué destruir.
   "ledger"`.
 - **RDS Multi-AZ** aunque duplique el tiempo del primer apply: la base es lo único con estado y
   sigue disponible si se cae una zona. `db_multi_az = false` la deja en una sola AZ para probar.
+- **La base no sobrevive a Destroy**: sin deletion protection ni snapshot final, porque Destroy
+  tiene que poder borrarla sin un apply previo. Mientras está desplegada guarda 7 días de backups
+  automáticos, que permiten volver a cualquier punto de ese período (por ejemplo, después de un
+  reinicio del ledger).
+- **Sin X-Ray en la Lambda, Performance Insights en RDS ni VPC Flow Logs**, por el laboratorio:
+  el usuario de AWS Academy no puede leer las trazas de X-Ray ni las métricas de Performance
+  Insights (los dos se pueden activar, pero nadie vería lo que juntan), y la trust policy de
+  `LabRole` no incluye a `vpc-flow-logs.amazonaws.com`, así que los Flow Logs sólo podrían ir a
+  S3, a un bucket aparte.
+- **Sin autenticación IAM en RDS**: la API entra con la credencial de Secrets Manager, y
+  habilitarla sólo sumaría una vía de login que nadie usa.
+- tfsec marca estas decisiones; cada una está ignorada en el código con el motivo al lado.
 
 ## 8. Requisitos del TP
 

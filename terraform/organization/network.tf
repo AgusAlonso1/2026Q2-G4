@@ -1,3 +1,7 @@
+# Sin Flow Logs: a CloudWatch Logs no pueden entregar (la trust policy de LabRole no incluye
+# vpc-flow-logs.amazonaws.com), y a S3 habría que sumar un bucket propio o abrirle a
+# delivery.logs.amazonaws.com la política y la clave KMS del bucket de datos.
+#tfsec:ignore:aws-ec2-require-vpc-flow-logs-for-all-vpcs
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 6.7"

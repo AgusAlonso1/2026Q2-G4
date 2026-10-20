@@ -4,6 +4,11 @@ locals {
   db_name = replace(var.name_prefix, "-", "_")
 }
 
+# Sin autenticación IAM: la API entra con la credencial de Secrets Manager; activarla sólo abriría
+# una segunda vía de login que nadie usa. Sin Performance Insights: en AWS Academy sus métricas no
+# se pueden consultar (el usuario del laboratorio no tiene permisos de lectura de pi:*).
+#tfsec:ignore:aws-rds-enable-iam-auth
+#tfsec:ignore:aws-rds-enable-performance-insights
 resource "aws_db_instance" "this" {
   identifier = "${var.name_prefix}-db"
 
@@ -27,10 +32,10 @@ resource "aws_db_instance" "this" {
   vpc_security_group_ids = [var.security_group_id]
   publicly_accessible    = false
 
-  backup_retention_period = 1
+  backup_retention_period = 7
   copy_tags_to_snapshot   = true
 
-  deletion_protection = false
+  deletion_protection = false #tfsec:ignore:aws-rds-enable-deletion-protection Destroy tiene que poder borrar la base
   skip_final_snapshot = true
 
   tags = {

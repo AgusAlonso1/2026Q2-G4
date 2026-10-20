@@ -14,7 +14,7 @@ variable "subnet_ids" {
 }
 
 variable "instance_type" {
-  description = "Tipo de instancia. La AMI optimizada para ECS (Docker y el agente) se elige según su arquitectura. Con red awsvpc cada tarea usa una ENI y la instancia se queda una: con 3 ENIs (large) entran dos tareas, con 2 (micro) una sola."
+  description = "Tipo de instancia. La AMI de ECS se elige según su arquitectura (x86 o arm64)."
   type        = string
 }
 
@@ -29,12 +29,12 @@ variable "security_group_id" {
 }
 
 variable "max_size" {
-  description = "Máximo de instancias. Es un techo: el capacity provider lanza sólo las que hacen falta para las tareas."
+  description = "Máximo de instancias del ASG."
   type        = number
 }
 
 variable "target_capacity" {
-  description = "Porcentaje de las instancias que el capacity provider quiere ocupadas. Con 100 no sobra ninguna; con menos deja lugar libre, y una tarea nueva arranca sin esperar a que se lance una instancia."
+  description = "Porcentaje de instancias que el capacity provider mantiene ocupadas. Menos de 100 deja lugar libre."
   type        = number
   default     = 100
 

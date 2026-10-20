@@ -42,7 +42,7 @@ Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions*
 |---|---|
 | Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
 | AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`), sólo para correr desde una máquina local |
-| Docker | Sólo para correr desde una máquina local, con `buildx` (lo trae Docker Desktop): `make imagen` construye la imagen del backend para amd64 y arm64 |
+| Docker | Sólo para correr desde una máquina local: `make imagen` construye la imagen del backend |
 | Cuenta | AWS Academy: usa `LabRole` y `LabInstanceProfile`, que ya existen en el laboratorio |
 
 Para desplegar desde GitHub Actions no hace falta nada instalado localmente: alcanza con los
@@ -276,8 +276,8 @@ ECS registra solo, y el health check es HTTP a `/health`.
 ### [`modules/capacity`](terraform/modules/capacity)
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
-SSM, de la arquitectura del tipo de instancia: x86 o Graviton) e IMDSv2 obligatorio, un ASG y
-el capacity provider que lo escala según las tareas, con un `target_capacity` por servicio.
+SSM, según la arquitectura de la instancia) e IMDSv2 obligatorio, un ASG y el capacity provider
+que lo escala según las tareas.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.

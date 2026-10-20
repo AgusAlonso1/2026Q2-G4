@@ -1,6 +1,4 @@
 #!/bin/bash
-# prefer-cached: los tags de ECR son inmutables, así que la imagen que ya está en el host es la misma.
-# BLOCK_IMDS: las tareas usan sus credenciales (task role), no las de la instancia.
 cat >> /etc/ecs/ecs.config <<'CONFIG'
 ECS_CLUSTER=${cluster}
 ECS_CONTAINER_STOP_TIMEOUT=30s

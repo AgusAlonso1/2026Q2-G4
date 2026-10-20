@@ -121,11 +121,10 @@ cuenta, y por eso ahí la política lista los buckets.
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS levanta las tareas nuevas antes de bajar las viejas: puede llegar al doble de
-tareas y nunca baja de las que había, así que la API no pierde capacidad durante un deploy; las
-primeras tareas nuevas entran en el lugar libre de las instancias. Una tarea nueva de la API
-recibe tráfico recién cuando pasa el health check del NLB, y si las nuevas no arrancan, el
-circuit breaker vuelve solo a la revisión anterior. El tope de conexiones a la base de cada
-tarea se calcula para ese doble, así que un deploy no agota las conexiones de RDS.
+tareas y nunca baja de la mitad. Una tarea nueva de la API recibe tráfico recién cuando pasa el
+health check del NLB, y si las nuevas no arrancan, el circuit breaker vuelve solo a la revisión
+anterior. El tope de conexiones a la base de cada tarea se calcula para ese doble, así que un
+deploy no agota las conexiones de RDS.
 
 El cluster tiene **Container Insights**: CPU, memoria y red por servicio y por tarea en
 CloudWatch, sin instalar nada en las instancias.
@@ -251,9 +250,6 @@ nuevo y Destroy no tendría qué destruir.
   del laboratorio, no unos mínimos por componente. Por eso la separación de custodios de la
   clave KMS no es real: en una cuenta propia cada servicio tendría su rol y la política de la
   clave nombraría sólo a los que la necesitan.
-- **Archivador en On-Demand**: en una cuenta propia iría en Spot, que AWS Academy no habilita
-  (ver [Cómputo](#3-cómputo)). Corre unas horas por día en una `t3.micro`, así que la
-  diferencia de costo es chica.
 - **RDS Multi-AZ** aunque duplique el tiempo del primer apply: la base es lo único con estado y
   sigue disponible si se cae una zona. `db_multi_az = false` la deja en una sola AZ para probar.
 

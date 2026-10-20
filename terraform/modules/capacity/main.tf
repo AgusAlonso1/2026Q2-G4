@@ -1,4 +1,3 @@
-# La AMI de ECS tiene que ser de la arquitectura del tipo de instancia: Graviton (arm64) o x86.
 data "aws_ec2_instance_type" "this" {
   instance_type = var.instance_type
 }

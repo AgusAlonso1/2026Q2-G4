@@ -3,8 +3,6 @@ TF     ?= terraform
 REGION ?= us-east-1
 # Hash del árbol de apps/ledger: cambia sólo si cambia el backend, no con cada commit.
 IMAGE_TAG ?= $(shell git rev-parse --short=12 HEAD:apps/ledger)
-# La API corre en Graviton (arm64) y el archivador en x86: la imagen se construye para las dos.
-# El driver docker por defecto no arma imágenes multi-arquitectura; el builder "ledger" usa docker-container.
 PLATFORMS ?= linux/amd64,linux/arm64
 
 export REGION

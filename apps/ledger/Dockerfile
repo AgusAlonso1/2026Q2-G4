@@ -1,4 +1,3 @@
-# Compila en la arquitectura del que construye y Go cruza a la de destino (TARGETARCH): sin emulación.
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
 WORKDIR /src
 

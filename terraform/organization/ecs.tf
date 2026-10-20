@@ -8,6 +8,11 @@ resource "aws_ecr_repository" "ledger" {
   image_scanning_configuration {
     scan_on_push = true
   }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.this.arn
+  }
 }
 
 resource "aws_ecs_cluster" "this" {

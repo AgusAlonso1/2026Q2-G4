@@ -41,6 +41,12 @@ variable "token_validity_hours" {
   }
 }
 
+variable "log_kms_key_arn" {
+  description = "Clave KMS con la que se cifran los logs de la Lambda. null: la de CloudWatch."
+  type        = string
+  default     = null
+}
+
 variable "log_retention_days" {
   description = "Días que se conservan los logs de la Lambda."
   type        = number

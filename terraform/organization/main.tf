@@ -12,6 +12,7 @@ module "storage" {
   source = "../modules/storage"
 
   name_prefix = local.name_prefix
+  kms_key_arn = aws_kms_key.this.arn
 }
 
 module "website" {
@@ -34,6 +35,7 @@ module "auth" {
   frontend_url        = module.website.website_url
   lambda_role_arn     = data.aws_iam_role.lab.arn
   callback_source_dir = "${path.root}/../../apps/callback"
+  log_kms_key_arn     = aws_kms_key.this.arn
 }
 
 module "database" {
@@ -47,6 +49,7 @@ module "database" {
   engine_version       = var.db_engine_version
   instance_class       = var.db_instance_class
   multi_az             = var.db_multi_az
+  kms_key_arn          = aws_kms_key.this.arn
 }
 
 module "load_balancer" {
@@ -93,6 +96,7 @@ module "service" {
     for nombre in nonsensitive(keys(local.secret_values[each.key])) :
     nombre => "${aws_secretsmanager_secret.this[each.key].arn}:${nombre}::${aws_secretsmanager_secret_version.this[each.key].version_id}"
   }
+  log_kms_key_arn   = aws_kms_key.this.arn
   port              = each.value.port
   target_group_arn  = each.value.target_group_arn
   subnet_ids        = each.value.subnet_ids

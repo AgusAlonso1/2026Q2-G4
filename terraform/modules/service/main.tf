@@ -3,6 +3,7 @@ data "aws_region" "current" {}
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/${var.name}"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.log_kms_key_arn
 }
 
 resource "aws_ecs_task_definition" "this" {

@@ -109,13 +109,13 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 |---|---|---|
 | `terraform-aws-modules/vpc/aws` | externo | VPC, 8 subredes en 4 capas × 2 AZ, IGW, NAT, tablas de ruteo |
 | `security_groups` | propio | Un SG por capa (`nlb`, `app`, `archive`, `data`), más los de los hosts de ECS y los interface endpoints, con reglas que referencian grupos, no rangos |
-| `storage` | propio | Bucket privado del archivo del ledger: versionado, cifrado (SSE-S3) y con transiciones a clases más baratas por prefijo |
+| `storage` | propio | Bucket privado del archivo del ledger: versionado, cifrado con la clave KMS del proyecto (SSE-KMS) y con transiciones a clases más baratas por prefijo |
 | `website` | propio | Bucket público con website hosting (HTTP), los archivos del frontend y su `config.json` |
 | `auth` | propio | User pool de Cognito con Hosted UI, y API Gateway HTTP + Lambda que hacen de callback HTTPS (ver "Login con Cognito") |
 | `database` | propio | RDS PostgreSQL Multi-AZ en la capa de datos, cifrada, sin acceso público |
 | `load_balancer` | propio | NLB público en HTTP:80 con health check HTTP a `/health` y target group de la API, con las IP de las tareas como targets |
 | `capacity` | propio | Instancias de un servicio de ECS: launch template con la AMI optimizada para ECS, ASG y capacity provider |
-| `service` | propio | Servicio de ECS: task definition (variables comunes y secretos desde Secrets Manager), servicio, logs y autoscaling de las tareas por CPU o por horario |
+| `service` | propio | Servicio de ECS: task definition (variables comunes y secretos desde Secrets Manager), servicio, logs cifrados y autoscaling de las tareas por CPU o por horario |
 
 ## Funciones
 
@@ -192,7 +192,7 @@ avanzado (Amazon Inspector) revisa además las dependencias de Go, pero se cobra
 No bloquea el deploy: informa, y como los tags son inmutables cada versión queda escaneada
 una sola vez, la vez que se sube.
 
-## Secretos
+## Secretos y cifrado
 
 Las claves que usan los binarios (la `DB_URL` con la password de la base, la de
 admin, la del mock, la del proveedor y la del webhook) no van en la task definition, donde
@@ -211,11 +211,32 @@ salen a Internet.
 Los secretos se crean con `recovery_window_in_days = 0`: Secrets Manager reserva por defecto
 el nombre 30 días después de borrarlo, y el siguiente Deploy fallaría por nombre duplicado.
 
-**Cifrado.** Secrets Manager cifra siempre con KMS; sin una clave indicada usa la que AWS
-administra para el servicio (`aws/secretsmanager`). Lo que cambia frente a la task definition
-no es que el valor esté cifrado en reposo sino quién lo puede leer: hace falta permiso de IAM
-sobre el secreto (`secretsmanager:GetSecretValue`), cada lectura queda en CloudTrail y el
-valor no aparece en la consola de ECS ni en `DescribeTaskDefinition`.
+**Clave KMS propia.** Todo se cifra en reposo aun sin ella: con nada indicado, cada servicio
+usa una clave que administra AWS (`aws/secretsmanager`, `aws/rds`, ...). Lo que esas claves
+no permiten es *gestionarlas*: su política no se puede modificar, no se pueden deshabilitar y
+la rotación no la decide uno. Para un PSP eso importa: PCI DSS (requisitos 3.6 y 3.7) pide
+restringir el acceso a las claves criptográficas a la menor cantidad posible de custodios,
+rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `alias/ledger`
+([`kms.tf`](terraform/organization/kms.tf)):
+
+- **Qué cifra:** los secretos de Secrets Manager, el bucket del archivo (SSE-KMS con *bucket
+  key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), el
+  almacenamiento y los backups de RDS, las imágenes de ECR y los logs de ECS y de la Lambda.
+- **Quién la usa:** la política nombra tres principales: la cuenta (sin ese permiso la clave
+  quedaría inadministrable), el `LabRole`, con sólo las operaciones de cifrado (nombrado
+  explícitamente para no depender de lo que permita su política de IAM en el laboratorio) y
+  CloudWatch Logs, limitado a los log groups de la cuenta.
+- **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
+  antes se sigue pudiendo leer.
+- **Retiro:** deshabilitar la clave corta de una vez el acceso a todos esos datos. Al
+  destruir, KMS la programa para borrarse en 7 días (el mínimo); el próximo Deploy crea otra.
+
+El bucket del frontend queda con AES256: lo leen usuarios anónimos por el endpoint de website,
+y un anónimo no puede tener permiso sobre una clave de KMS.
+
+En el laboratorio la separación de custodios no es real: la API, el archivador y la Lambda
+corren todos con el mismo `LabRole`. En una cuenta propia cada servicio tendría su rol y la
+política de la clave nombraría sólo a los que la necesitan.
 
 **Lo que queda.** Los valores siguen en el state de Terraform, porque los genera Terraform; el
 state está en un bucket privado y cifrado. El client secret de Cognito sigue en una variable

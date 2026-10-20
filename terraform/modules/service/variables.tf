@@ -103,6 +103,12 @@ variable "schedule_time_zone" {
   default     = "America/Argentina/Buenos_Aires"
 }
 
+variable "log_kms_key_arn" {
+  description = "Clave KMS con la que se cifran los logs. null: la de CloudWatch."
+  type        = string
+  default     = null
+}
+
 variable "log_retention_days" {
   description = "Días que se conservan los logs del servicio."
   type        = number

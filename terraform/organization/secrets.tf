@@ -12,6 +12,7 @@ resource "aws_secretsmanager_secret" "this" {
 
   name        = "${local.name_prefix}/${each.key}"
   description = "Variables secretas de ${local.name_prefix}-${each.key}"
+  kms_key_id  = aws_kms_key.this.arn
 
   # Sin ventana de recuperación: después de un destroy el nombre queda libre para el próximo deploy.
   recovery_window_in_days = 0

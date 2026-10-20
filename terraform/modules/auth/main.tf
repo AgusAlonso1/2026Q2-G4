@@ -136,11 +136,28 @@ resource "aws_apigatewayv2_route" "this" {
   target    = "integrations/${aws_apigatewayv2_integration.callback.id}"
 }
 
-#tfsec:ignore:aws-api-gateway-enable-access-logging
+resource "aws_cloudwatch_log_group" "api" {
+  name              = "/aws/apigateway/${var.name_prefix}-auth"
+  retention_in_days = var.log_retention_days
+}
+
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.this.id
   name        = "$default"
   auto_deploy = true
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.api.arn
+    format = jsonencode({
+      requestId        = "$context.requestId"
+      ip               = "$context.identity.sourceIp"
+      requestTime      = "$context.requestTime"
+      routeKey         = "$context.routeKey"
+      status           = "$context.status"
+      latency          = "$context.responseLatency"
+      integrationError = "$context.integrationErrorMessage"
+    })
+  }
 }
 
 resource "aws_lambda_permission" "api_gateway" {

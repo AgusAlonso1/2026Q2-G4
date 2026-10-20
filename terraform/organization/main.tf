@@ -90,8 +90,7 @@ module "service" {
   cpu                    = each.value.cpu
   memory                 = each.value.memory
   environment            = each.value.environment
-  # Cada clave del secreto como variable. Con el version_id, si cambia un valor cambia la task
-  # definition y ECS reemplaza las tareas: sin él seguirían con el valor viejo.
+  # Con el version_id, un valor nuevo cambia la task definition y ECS reemplaza las tareas.
   secrets = {
     for nombre in nonsensitive(keys(local.secret_values[each.key])) :
     nombre => "${aws_secretsmanager_secret.this[each.key].arn}:${nombre}::${aws_secretsmanager_secret_version.this[each.key].version_id}"

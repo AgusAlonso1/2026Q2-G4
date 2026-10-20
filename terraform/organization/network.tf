@@ -79,9 +79,8 @@ resource "aws_vpc_endpoint" "s3" {
   }
 }
 
-# Sin NAT en las subredes de archive: los hosts de ECS llegan a ECS, ECR, Logs y Secrets
-# Manager (el agente lee los secretos de la tarea antes de arrancarla) por acá. Con el DNS
-# privado los de app también, aunque tengan NAT; a las ENIs se llega desde cualquier subred.
+# Sin NAT en las subredes de archive: los hosts de ECS llegan por acá a ECS, ECR, Logs y
+# Secrets Manager. Los de app también, por el DNS privado.
 resource "aws_vpc_endpoint" "interface" {
   for_each = toset(["ecs", "ecs-agent", "ecs-telemetry", "ecr.api", "ecr.dkr", "logs", "secretsmanager"])
 

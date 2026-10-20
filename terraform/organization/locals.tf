@@ -75,8 +75,7 @@ locals {
   db_pool_size = floor(var.db_max_connections / sum([for s in values(local.services) : 2 * s.max_count]))
   db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
 
-  # Aparte de services: son sensibles, y for_each no acepta valores sensibles. Van a Secrets
-  # Manager (secrets.tf), no a la task definition.
+  # Aparte de services: son sensibles, y for_each no acepta valores sensibles.
   mock_api_key = coalesce(var.mock_api_key, random_password.this["mock"].result)
 
   secret_values = {

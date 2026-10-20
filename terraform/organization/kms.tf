@@ -1,8 +1,3 @@
-data "aws_caller_identity" "current" {}
-
-# Una clave propia para todo lo que guarda datos del ledger: secretos, bucket del archivo,
-# RDS, ECR y los logs. El bucket del frontend no: un sitio público no puede servir objetos
-# cifrados con KMS a usuarios anónimos.
 resource "aws_kms_key" "this" {
   description             = "${local.name_prefix}: secretos, archivo del ledger, RDS, ECR y logs"
   enable_key_rotation     = true

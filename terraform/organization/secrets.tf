@@ -5,8 +5,6 @@ resource "random_password" "this" {
   special = false
 }
 
-# Un secreto por servicio, con sólo lo que ese servicio usa. ECS los lee al arrancar cada
-# tarea y los pasa como variables de entorno: en la task definition queda el ARN, no el valor.
 resource "aws_secretsmanager_secret" "this" {
   for_each = local.services
 

@@ -3,8 +3,6 @@ resource "aws_ecr_repository" "ledger" {
   image_tag_mutability = "IMMUTABLE"
   force_delete         = true
 
-  # Escaneo básico: cada push se revisa contra la base de CVE, sin costo. Con tags
-  # inmutables cada imagen se sube una sola vez, así que cada versión queda escaneada.
   image_scanning_configuration {
     scan_on_push = true
   }

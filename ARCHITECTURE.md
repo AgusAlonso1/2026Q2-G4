@@ -72,11 +72,13 @@ llega a ellas desde cualquier subred de la VPC: lo que limita quién entra es su
 que sólo acepta a los hosts de ECS. Las instancias de la API usan los mismos endpoints, así que
 el NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
 
-Todo el tráfico de la VPC hacia S3 pasa por el gateway endpoint, también el de las subredes de
-`app`. Su política sólo deja llegar al bucket del proyecto y al de las capas de ECR: una tarea
-comprometida no puede copiar datos a un bucket de otra cuenta. El security group no alcanza
-para eso, porque la prefix list de S3 incluye todos los buckets. El bucket, por su lado, rechaza
-cualquier pedido que no venga por HTTPS.
+Todo el tráfico de la VPC hacia S3 de la región pasa por el gateway endpoint, también el de las
+subredes de `app`. Su política sólo deja llegar al bucket del proyecto y al de las capas de ECR:
+el archivador y las instancias, que no tienen otra salida, no pueden copiar datos a un bucket de
+otra cuenta. El security group no alcanza para eso, porque la prefix list de S3 incluye todos
+los buckets. Las tareas de la API sí salen a Internet por el NAT, así que para ellas la política
+sólo cubre S3 de esta región. El bucket, por su lado, rechaza cualquier pedido que no venga por
+HTTPS.
 
 Los interface endpoints, en cambio, sólo aceptan credenciales de la propia cuenta. Lo que pasa
 por ellos lo firma el rol de las instancias, así que el agente, la descarga de la imagen y los
@@ -85,11 +87,16 @@ afuera. En S3 esa condición no sirve: las capas de ECR se bajan con URLs que fi
 cuenta, y por eso ahí la política lista los buckets.
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
-definition. ECS levanta las tareas nuevas antes de bajar las viejas: puede llegar al doble de
-tareas y nunca baja de la mitad. Una tarea nueva de la API recibe tráfico recién cuando pasa el
-health check del NLB, y si las nuevas no arrancan, el circuit breaker vuelve solo a la revisión
-anterior. El tope de conexiones a la base de cada tarea se calcula para ese doble, así que un
-deploy no agota las conexiones de RDS.
+definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas y suma
+tareas nuevas mientras haya lugar en el ASG, que admite una instancia más que el máximo de
+tareas (con las dos tareas habituales de la API llega al doble). Una tarea nueva de la API
+recibe tráfico recién cuando pasa el health check del NLB, y si las nuevas no arrancan, el
+circuit breaker vuelve solo a la revisión anterior. Eso vale mientras la revisión nueva no haya
+aplicado una migración: un binario no arranca contra una base con migraciones que no conoce,
+así que las tareas viejas que siguen corriendo no se caen, pero las que ECS intente levantar con
+la revisión anterior fallan, y la salida es otro deploy hacia adelante. El tope de conexiones a
+la base de cada tarea se calcula como si cada servicio llegara al doble de su máximo, más de lo
+que puede correr a la vez, así que un deploy no agota las conexiones de RDS.
 
 El cluster tiene **Container Insights**: CPU, memoria y red por servicio y por tarea en
 CloudWatch, sin instalar nada en las instancias.
@@ -127,9 +134,10 @@ endpoint.
 Los secretos se crean con `recovery_window_in_days = 0`: Secrets Manager reserva por defecto
 el nombre 30 días después de borrarlo, y el siguiente Deploy fallaría por nombre duplicado.
 
-**Clave KMS propia.** Todo se cifra en reposo aun sin ella: con nada indicado, cada servicio
-usa una clave que administra AWS (`aws/secretsmanager`, `aws/rds`, ...). Lo que esas claves
-no permiten es *gestionarlas*: su política no se puede modificar, no se pueden deshabilitar y
+**Clave KMS propia.** Secrets Manager, S3, ECR y CloudWatch Logs cifran siempre en reposo, aun
+sin indicar nada, con claves que administra AWS; RDS y EBS cifran sólo si se pide, y también
+pueden usar una clave de AWS (`aws/rds`, `aws/ebs`). Lo que esas claves no permiten es
+*gestionarlas*: su política no se puede modificar, no se pueden deshabilitar y
 la rotación no la decide uno. Para un PSP eso importa: PCI DSS (requisitos 3.6 y 3.7) pide
 restringir el acceso a las claves criptográficas a la menor cantidad posible de custodios,
 rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `alias/ledger`
@@ -138,11 +146,16 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
 - **Qué cifra:** los secretos de Secrets Manager, el bucket del archivo (SSE-KMS con *bucket
   key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), el
   almacenamiento y los backups de RDS, las imágenes de ECR y los logs de ECS, de la Lambda y
-  de API Gateway.
+  de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
+  EBS (`aws/ebs`) y no con la del proyecto: para que Auto Scaling lance instancias con discos
+  cifrados con una clave propia, su rol de servicio tendría que figurar en la política de la
+  clave.
 - **Quién la usa:** la política nombra tres principales: la cuenta (sin ese permiso la clave
-  quedaría inadministrable), el `LabRole`, con sólo las operaciones de cifrado (nombrado
+  quedaría inadministrable), el `LabRole`, sólo para las operaciones de cifrado (nombrado
   explícitamente para no depender de lo que permita su política de IAM en el laboratorio) y
-  CloudWatch Logs, limitado a los log groups de la cuenta.
+  CloudWatch Logs, limitado a los log groups de la cuenta. El permiso de la cuenta delega en
+  IAM, y la política de IAM del `LabRole` es amplia: en la práctica también puede administrar y
+  borrar la clave (ver [Trade-offs](#7-trade-offs)).
 - **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
   antes se sigue pudiendo leer.
 - **Retiro:** deshabilitar la clave corta de una vez el acceso a todos esos datos. Al
@@ -212,11 +225,15 @@ nuevo y Destroy no tendría qué destruir.
 ## 7. Trade-offs
 
 - **Un solo NAT**, en la primera AZ. Ahorra el costo de uno por AZ; si esa AZ se cae, las
-  tareas de la API de la otra siguen atendiendo y llegando a la base, pero no al proveedor ni
-  al webhook. Los servicios de AWS no dependen del NAT: van por los endpoints.
-- **NLB en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
-  certificado. El token viaja en claro entre el navegador y el NLB; el login, en cambio, es
-  HTTPS de punta a punta (Hosted UI y API Gateway).
+  tareas de la API de la otra siguen atendiendo y llegando a la base y a los servicios de AWS
+  (por los endpoints), pero no al proveedor, al webhook ni a las claves públicas de Cognito. Las
+  tareas que ya tenían las claves siguen validando sesiones; una tarea nueva no puede hasta que
+  vuelva el NAT. Con el proveedor por defecto, el mock de la propia API, las operaciones con el
+  proveedor tampoco se completan, porque la API lo llama por el NLB.
+- **La API en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
+  certificado. El access token y las claves de operación (`X-Admin-Key`, `X-Mock-Key`) viajan
+  en claro entre el navegador y el NLB; el login, en cambio, es HTTPS de punta a punta (Hosted
+  UI y API Gateway).
 - **Los secretos siguen en el state de Terraform**, porque los genera Terraform. El state está
   en un bucket privado y cifrado.
 - **`LabRole` para todo**: las tareas, el agente de ECS y la Lambda tienen los permisos del rol

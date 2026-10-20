@@ -9,6 +9,16 @@ resource "aws_launch_template" "this" {
     arn = var.instance_profile_arn
   }
 
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      encrypted             = true
+      volume_type           = "gp3"
+      delete_on_termination = true
+    }
+  }
+
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"

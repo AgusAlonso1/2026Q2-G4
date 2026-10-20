@@ -71,7 +71,8 @@ locals {
     }
   }
 
-  # En un deploy cada servicio llega al doble de max_count (deployment_maximum_percent = 200).
+  # Cota para un deploy: cada servicio como si llegara al doble de max_count
+  # (deployment_maximum_percent = 200), más de lo que admite su ASG.
   db_pool_size = floor(var.db_max_connections / sum([for s in values(local.services) : 2 * s.max_count]))
   db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
 

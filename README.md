@@ -103,9 +103,17 @@ o como variables de entorno `TF_VAR_*` antes de `make plan`.
 
 Deploy y Destroy comparten un grupo de `concurrency`: nunca corren a la vez sobre el mismo state.
 
+En un pull request que viene de un fork o de dependabot, GitHub no le pasa los secrets al
+workflow: ahí
+**Terraform** corre `fmt`, `init` y `validate`, y el `plan` aparece como salteado (*skipped*)
+en lugar de fallar por falta de credenciales. El `plan` contra la cuenta corre en los pull
+requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**.
+
 Los workflows de la cátedra (`terraform-format`, `terraform-docs`, `tfsec`) corren en paralelo
-en cada pull request. `terraform-docs` regenera los README de `terraform/modules/` y hace commit
-en la rama del PR: hacer `git pull` antes de seguir pusheando.
+en cada pull request. `terraform-docs` regenera los README de `terraform/modules/` y trata de
+commitearlos en la rama del PR, para lo que necesita que el token del workflow tenga permiso de
+escritura (un PR desde un fork no lo tiene). Los README de los módulos ya se commitean
+generados con terraform-docs, así que no debería encontrar cambios.
 
 ### 3. Desplegar
 
@@ -158,7 +166,9 @@ Después, entrar por `website_url`:
 **Actions → Destroy → Run workflow** → escribir `destroy`.
 
 Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
-[Estado](ARCHITECTURE.md#6-estado)). No queda nada del TP en la cuenta.
+[Estado](ARCHITECTURE.md#6-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
+el log group que crea Container Insights (`/aws/ecs/containerinsights/ledger-cluster/performance`,
+con retención de un día); ninguno de los dos molesta al próximo Deploy.
 
 ### Desde una máquina local
 
@@ -275,7 +285,7 @@ acceso público. Expone la `DB_URL` de los binarios, con TLS obligatorio.
 
 ### [`modules/load_balancer`](terraform/modules/load_balancer)
 
-NLB público en HTTP:80 con el target group de la API. Los targets son las IP de las tareas, que
+NLB público con un listener TCP:80 y el target group de la API. Los targets son las IP de las tareas, que
 ECS registra solo, y el health check es HTTP a `/health`.
 
 **Recursos:** `aws_lb.this`, `aws_lb_target_group.api` y `aws_lb_listener.http`.
@@ -285,7 +295,7 @@ ECS registra solo, y el health check es HTTP a `/health`.
 ### [`modules/capacity`](terraform/modules/capacity)
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
-SSM) e IMDSv2 obligatorio, un ASG y el capacity provider que lo escala según las tareas.
+SSM), el disco raíz cifrado e IMDSv2 obligatorio, un ASG y el capacity provider que lo escala según las tareas.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.
@@ -379,7 +389,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
 ├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
-├── img/                   # diagrama de arquitectura (.png y .drawio) y capturas de los pasos
+├── img/                   # diagrama de arquitectura (.png y .drawio)
 ├── scripts/
 │   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
 ├── terraform/

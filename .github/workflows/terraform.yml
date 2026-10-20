@@ -40,6 +40,11 @@ jobs:
   plan:
     name: plan
     needs: validate
+    # GitHub no pasa secrets a un PR que viene de un fork ni a los de dependabot: ahí el plan se
+    # saltea en lugar de fallar.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     env:
       # Credenciales de AWS Academy: vencen con la sesión del laboratorio, hay que

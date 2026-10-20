@@ -52,6 +52,28 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_endpoint_type = "Gateway"
   route_table_ids   = concat(module.vpc.private_route_table_ids, module.vpc.intra_route_table_ids)
 
+  # Sin política, el endpoint deja llegar a cualquier bucket, también a los de otras cuentas.
+  # El de starport guarda las capas de las imágenes de ECR.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "ProjectBucket"
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource  = [module.storage.bucket_arn, "${module.storage.bucket_arn}/*"]
+      },
+      {
+        Sid       = "EcrLayers"
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "s3:GetObject"
+        Resource  = "arn:aws:s3:::prod-${var.aws_region}-starport-layer-bucket/*"
+      },
+    ]
+  })
+
   tags = {
     Name = "${local.name_prefix}-vpce-s3"
   }

@@ -132,7 +132,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `floor`, `sum` | `organization/locals.tf` | Reparte `db_max_connections` entre las tareas: el tope de cada una va en la `DB_URL` (`pool_max_conns`) |
 | `fileset` | `modules/website/main.tf` | Lista los archivos del frontend para subir uno por uno |
 | `regex`, `lower`, `contains`, `keys` | `modules/website/main.tf` | Saca la extensión y publica sólo los tipos conocidos |
-| `jsonencode` | `modules/website/main.tf` | Arma la política de lectura pública |
+| `jsonencode` | `modules/website/main.tf`, `modules/storage/main.tf`, `organization/network.tf` | Arma la política de lectura pública del sitio, la que exige TLS en el bucket del proyecto y la del endpoint de S3 |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `toset` | `modules/auth/main.tf` | Una ruta de API Gateway por elemento (`/callback`, `/logout`) |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
@@ -179,6 +179,12 @@ S3 por el gateway endpoint. Las ENIs de los endpoints están en las subredes de 
 llega a ellas desde cualquier subred de la VPC: lo que limita quién entra es su security group,
 que sólo acepta a los hosts de ECS. Las instancias de la API usan los mismos endpoints, así que
 el NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
+
+Todo el tráfico de la VPC hacia S3 pasa por el gateway endpoint, también el de las subredes de
+`app`. Su política sólo deja llegar al bucket del proyecto y al de las capas de ECR: una tarea
+comprometida no puede copiar datos a un bucket de otra cuenta. El security group no alcanza
+para eso, porque la prefix list de S3 incluye todos los buckets. El bucket, por su lado, rechaza
+cualquier pedido que no venga por HTTPS.
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a una, esperando el health check del NLB, y si las

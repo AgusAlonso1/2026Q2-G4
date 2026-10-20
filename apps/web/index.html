@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Núcleo — billetera</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+
+<section id="acceso" class="acceso" hidden>
+  <form class="tarjeta-acceso" id="form-acceso">
+    <div class="marca marca-grande">núcleo</div>
+    <h1>Ingresá a tu cuenta</h1>
+    <p class="ayuda">Vas a iniciar sesión en la página de Cognito y volver acá.</p>
+    <div style="height:1.25rem"></div>
+
+    <button class="boton boton-primario boton-ancho" type="submit" id="acceso-entrar">Continuar</button>
+    <p class="error" id="acceso-error" hidden></p>
+
+    <div class="acceso-pie">
+      <span class="ayuda">Inicio de sesión con Cognito</span>
+      <button type="button" class="enlace enlace-tenue" id="acceso-servidor">Servidor</button>
+    </div>
+  </form>
+
+  <form class="tarjeta-acceso" id="form-alta" autocomplete="off" hidden>
+    <div class="marca marca-grande">núcleo</div>
+    <h1>Creá tu cuenta</h1>
+    <p class="ayuda" id="alta-quien"></p>
+    <div style="height:1rem"></div>
+
+    <label class="campo">
+      <span>Alias</span>
+      <input id="alta-alias" name="alias" placeholder="tu.alias" required>
+    </label>
+
+    <button class="boton boton-primario boton-ancho" type="submit">Crear cuenta</button>
+    <p class="error" id="alta-error" hidden></p>
+
+    <div class="acceso-pie">
+      <button type="button" class="enlace enlace-tenue" id="alta-salir">Salir</button>
+      <button type="button" class="enlace enlace-tenue" id="alta-servidor">Servidor</button>
+    </div>
+  </form>
+</section>
+
+<div id="aplicacion" hidden>
+  <header class="barra">
+    <div class="marca">núcleo</div>
+    <nav class="barra-nav" id="nav"></nav>
+    <div class="barra-derecha">
+      <button class="avatar" id="menu-perfil" title="Tu cuenta"></button>
+    </div>
+  </header>
+
+  <main id="hoja" class="hoja"></main>
+
+  <nav class="barra-inferior" id="nav-movil"></nav>
+</div>
+
+<dialog id="dialogo-servidor">
+  <form method="dialog" class="dialogo">
+    <h2>Servidor</h2>
+    <label class="campo">
+      <span>Dirección de la API</span>
+      <input id="servidor-base" readonly>
+    </label>
+    <p class="ayuda" id="servidor-estado"></p>
+    <menu>
+      <button class="boton boton-primario" value="cerrar">Cerrar</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dialogo-claves">
+  <form method="dialog" class="dialogo">
+    <h2>Claves de operación</h2>
+    <label class="campo">
+      <span>X-Admin-Key</span>
+      <input id="clave-admin" type="password" autocomplete="off">
+    </label>
+    <label class="campo">
+      <span>X-Mock-Key</span>
+      <input id="clave-mock" type="password" autocomplete="off">
+    </label>
+    <p class="ayuda">Quedan en este navegador. Sin ellas el panel responde 401.</p>
+    <menu>
+      <button class="boton" value="cancelar">Cancelar</button>
+      <button class="boton boton-primario" id="claves-guardar" value="guardar">Guardar</button>
+    </menu>
+  </form>
+</dialog>
+
+<div id="avisos" class="avisos" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

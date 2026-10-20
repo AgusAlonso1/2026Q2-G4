@@ -72,6 +72,7 @@ locals {
       AWS_REGION        = var.aws_region
       COGNITO_ISSUER    = module.auth.issuer
       COGNITO_CLIENT_ID = module.auth.client_id
+      CORS_ORIGENES     = module.website.website_url
       ADMIN_API_KEY     = random_password.this["admin"].result
       MOCK_API_KEY      = local.mock_api_key
       PROVEEDOR_URL     = coalesce(var.proveedor_url, "${local.api_url}/servicio-mock")

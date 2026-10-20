@@ -74,9 +74,25 @@ en la rama del PR: hacer `git pull` antes de seguir pusheando.
 
 ### 4. Probar
 
-TODO: `curl <api_url>/health`, crear un usuario en Cognito con
-`aws cognito-idp admin-create-user --user-pool-id <terraform output cognito>` y entrar por
-`website_url`.
+TODO: `curl <api_url>/health` y crear un usuario en Cognito con
+`aws cognito-idp admin-create-user --user-pool-id <terraform output cognito>`.
+
+Con el usuario creado, entrar por `website_url`:
+
+1. **Continuar** lleva a la Hosted UI de Cognito y, después del login, se vuelve al sitio.
+2. La primera vez pide un alias y crea la cuenta, con $ 50.000 de saldo inicial para la demo.
+3. La billetera: **Inicio**, **Enviar** (a otra cuenta), **Ingresar** (*Ya hice la
+   transferencia* simula el depósito del banco), **Retirar** (egreso por el proveedor) y
+   **Actividad**, con el resumen de cada mes: el de un mes archivado lo arma la API desde S3.
+4. **Operación** muestra la salud y qué tarea atendió, el proveedor activo, el cierre contable,
+   el archivado, el extracto y la exportación, y la cinta de llamadas a la API con su código y
+   su latencia. Las tarjetas de `/admin/*` y del mock piden las claves (menú de la cuenta →
+   *Claves de operación*), que son variables de entorno de la tarea de la API:
+
+   ```bash
+   aws ecs describe-task-definition --task-definition ledger-api --output text \
+     --query "taskDefinition.containerDefinitions[0].environment[?name=='ADMIN_API_KEY' || name=='MOCK_API_KEY'].[name,value]"
+   ```
 
 ### 5. Destruir al terminar
 
@@ -202,11 +218,13 @@ desde S3.
 4. El frontend valida el `state`, guarda los tokens y limpia la URL.
 5. El frontend llama a la API con `Authorization: Bearer <access_token>`. La API valida la
    firma contra `<issuer>/.well-known/jwks.json` y comprueba `client_id` y `token_use=access`.
+   Por CORS, sólo acepta pedidos del navegador que vengan de `website_url` (`CORS_ORIGENES`).
 6. La primera vez, `GET /sesiones/actual` devuelve `cuenta_id: null` y el frontend crea la cuenta
    con `POST /cuentas`. La cuenta queda ligada al `sub` del usuario: cada usuario tiene una sola,
    y es la única que puede leer y operar (si no, 403).
 
-Para cerrar sesión, el frontend borra los tokens y redirige a `logout_url`. Cognito vuelve por
+Si el token vence (según `expires_in`) o la API responde 401, el frontend borra los tokens y
+vuelve a la pantalla de ingreso. Para cerrar sesión, borra los tokens y redirige a `logout_url`. Cognito vuelve por
 `/logout` de API Gateway, porque tampoco acepta logout URLs HTTP.
 
 `config.json` lo genera Terraform (`api_url`, `login_url`, `logout_url`), así que no va en

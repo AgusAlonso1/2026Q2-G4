@@ -74,12 +74,27 @@ en la rama del PR: hacer `git pull` antes de seguir pusheando.
 
 ### 4. Probar
 
-TODO: `curl <api_url>/health` y crear un usuario en Cognito con
-`aws cognito-idp admin-create-user --user-pool-id <terraform output cognito>`.
+Con las URL del resumen del run, verificar que la API responde:
 
-Con el usuario creado, entrar por `website_url`:
+```bash
+curl <api_url>/health
+```
 
-1. **Continuar** lleva a la Hosted UI de Cognito y, después del login, se vuelve al sitio.
+Después, entrar por `website_url`:
+
+1. **Continuar** lleva a la Hosted UI de Cognito. La primera vez, **Sign up** con un email y una
+   contraseña (8 caracteres, con minúsculas y números). Cognito manda un código a ese email; al
+   cargarlo se vuelve al sitio con la sesión iniciada. El registro está abierto, así que no hace
+   falta crear usuarios antes.
+
+   Si el código no llega (Cognito manda los emails con su remitente por defecto, que tiene un
+   límite diario), el usuario se confirma por CLI. El `user_pool_id` está en `terraform output
+   cognito`:
+
+   ```bash
+   aws cognito-idp admin-confirm-sign-up --user-pool-id <user_pool_id> --username <email>
+   ```
+
 2. La primera vez pide un alias y crea la cuenta, con $ 50.000 de saldo inicial para la demo.
 3. La billetera: **Inicio**, **Enviar** (a otra cuenta), **Ingresar** (*Ya hice la
    transferencia* simula el depósito del banco), **Retirar** (egreso por el proveedor) y

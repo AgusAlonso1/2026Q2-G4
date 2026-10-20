@@ -129,6 +129,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `try` | `modules/security_groups/main.tf` | Usa el SG de destino sólo si el `peer` de la regla es otro grupo |
 | `replace` | `modules/security_groups/main.tf` | Arma el `Name` de cada regla desde su clave (`app_in_nlb` → `ledger-app-in-nlb`) |
 | `format` | `modules/database/outputs.tf` | Arma la `DB_URL` de los binarios desde los atributos de la instancia |
+| `floor`, `sum` | `organization/locals.tf` | Reparte `db_max_connections` entre las tareas: el tope de cada una va en la `DB_URL` (`pool_max_conns`) |
 | `fileset` | `modules/website/main.tf` | Lista los archivos del frontend para subir uno por uno |
 | `regex`, `lower`, `contains`, `keys` | `modules/website/main.tf` | Saca la extensión y publica sólo los tipos conocidos |
 | `jsonencode` | `modules/website/main.tf` | Arma la política de lectura pública |

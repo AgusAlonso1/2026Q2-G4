@@ -70,20 +70,24 @@ locals {
     }
   }
 
+  # En un deploy cada servicio llega al doble de max_count (deployment_maximum_percent = 200).
+  db_pool_size = floor(var.db_max_connections / sum([for s in values(local.services) : 2 * s.max_count]))
+  db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
+
   # Aparte de services: son sensibles, y for_each no acepta valores sensibles. Van a Secrets
   # Manager (secrets.tf), no a la task definition.
   mock_api_key = coalesce(var.mock_api_key, random_password.this["mock"].result)
 
   secret_values = {
     api = {
-      DB_URL            = module.database.url
+      DB_URL            = local.db_url
       ADMIN_API_KEY     = random_password.this["admin"].result
       MOCK_API_KEY      = local.mock_api_key
       PROVEEDOR_API_KEY = coalesce(var.proveedor_api_key, local.mock_api_key)
       WEBHOOK_SECRET    = coalesce(var.webhook_secret, random_password.this["webhook"].result)
     }
     archive = {
-      DB_URL = module.database.url
+      DB_URL = local.db_url
     }
   }
 }

@@ -22,7 +22,6 @@ func Abrir(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsear DB_URL: %w", err)
 	}
-	cfg.MaxConns = 20
 	cfg.MinConns = 2
 	cfg.MaxConnLifetime = time.Hour
 	cfg.MaxConnIdleTime = 5 * time.Minute

@@ -38,8 +38,11 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   bucket = aws_s3_bucket.this.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = var.kms_key_arn
     }
+    # Una clave de datos por bucket y no por objeto: menos llamadas a KMS, que se cobran.
+    bucket_key_enabled = true
   }
 }
 

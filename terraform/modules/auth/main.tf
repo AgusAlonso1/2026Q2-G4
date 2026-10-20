@@ -77,6 +77,7 @@ data "archive_file" "callback" {
 resource "aws_cloudwatch_log_group" "callback" {
   name              = "/aws/lambda/${var.name_prefix}-callback"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.log_kms_key_arn
 }
 
 resource "aws_lambda_function" "callback" {

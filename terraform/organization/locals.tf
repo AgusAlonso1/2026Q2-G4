@@ -41,6 +41,16 @@ locals {
       max_count         = 6
       cpu_target        = 60
       schedule          = {}
+      environment = {
+        APP_PORT          = tostring(var.app_port)
+        S3_BUCKET         = module.storage.bucket_name
+        AWS_REGION        = var.aws_region
+        COGNITO_ISSUER    = module.auth.issuer
+        COGNITO_CLIENT_ID = module.auth.client_id
+        CORS_ORIGENES     = module.website.website_url
+        PROVEEDOR_URL     = coalesce(var.proveedor_url, "${local.api_url}/servicio-mock")
+        WEBHOOK_URL       = var.webhook_url
+      }
     }
     archive = {
       command           = ["/archivador"]
@@ -54,6 +64,10 @@ locals {
       max_count         = 1
       cpu_target        = null
       schedule          = var.archive_schedule
+      environment = {
+        S3_BUCKET  = module.storage.bucket_name
+        AWS_REGION = var.aws_region
+      }
     }
   }
 
@@ -61,29 +75,20 @@ locals {
   db_pool_size = floor(var.db_max_connections / sum([for s in values(local.services) : 2 * s.max_count]))
   db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
 
-  # Aparte de services: llevan secretos, y for_each no acepta valores sensibles.
+  # Aparte de services: son sensibles, y for_each no acepta valores sensibles. Van a Secrets
+  # Manager (secrets.tf), no a la task definition.
   mock_api_key = coalesce(var.mock_api_key, random_password.this["mock"].result)
 
-  environments = {
+  secret_values = {
     api = {
-      APP_PORT          = tostring(var.app_port)
       DB_URL            = local.db_url
-      S3_BUCKET         = module.storage.bucket_name
-      AWS_REGION        = var.aws_region
-      COGNITO_ISSUER    = module.auth.issuer
-      COGNITO_CLIENT_ID = module.auth.client_id
-      CORS_ORIGENES     = module.website.website_url
       ADMIN_API_KEY     = random_password.this["admin"].result
       MOCK_API_KEY      = local.mock_api_key
-      PROVEEDOR_URL     = coalesce(var.proveedor_url, "${local.api_url}/servicio-mock")
       PROVEEDOR_API_KEY = coalesce(var.proveedor_api_key, local.mock_api_key)
-      WEBHOOK_URL       = var.webhook_url
       WEBHOOK_SECRET    = coalesce(var.webhook_secret, random_password.this["webhook"].result)
     }
     archive = {
-      DB_URL     = local.db_url
-      S3_BUCKET  = module.storage.bucket_name
-      AWS_REGION = var.aws_region
+      DB_URL = local.db_url
     }
   }
 }

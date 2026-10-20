@@ -33,6 +33,9 @@ resource "aws_s3_bucket_public_access_block" "this" {
   restrict_public_buckets = false #tfsec:ignore:aws-s3-no-public-buckets
 }
 
+# AES256 y no KMS: el endpoint de website sirve a usuarios anónimos, que no pueden tener
+# permiso sobre una clave de KMS. Son archivos públicos, no hay nada que proteger con ella.
+#tfsec:ignore:aws-s3-encryption-customer-key
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
   bucket = aws_s3_bucket.this.id
 

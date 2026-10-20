@@ -15,6 +15,7 @@ resource "aws_db_instance" "this" {
   allocated_storage = 20
   storage_type      = "gp3"
   storage_encrypted = true
+  kms_key_id        = var.kms_key_arn
 
   db_name  = local.db_name
   username = "${local.db_name}_admin"

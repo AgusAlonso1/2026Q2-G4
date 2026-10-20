@@ -9,7 +9,7 @@ request contra un ledger de partida doble en PostgreSQL, y los meses viejos se a
 
 La arquitectura detallada está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-TODO: diagrama actualizado (`img/arquitectura.png`), alineado con este código.
+![Diagrama de arquitectura en AWS](img/arquitectura.png)
 
 **Flujo de datos:**
 
@@ -54,7 +54,11 @@ secrets del paso 1.
 
 | Nombre | Legajo |
 |---|---|
-| TODO | |
+| Agustín Alonso | 63316 |
+| Luciano Stupnik | 64233 |
+| Tomás Becerra | 63732 |
+| Valentino Sanguinetti | 63098 |
+| Hannah Hauge Kalager | 69482 |
 
 ---
 
@@ -375,6 +379,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
 ├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
+├── img/                   # diagrama de arquitectura (.png y .drawio) y capturas de los pasos
 ├── scripts/
 │   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
 ├── terraform/

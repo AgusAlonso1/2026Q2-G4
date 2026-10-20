@@ -56,23 +56,41 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
+      # Un pull request desde un fork (la entrega va al repo de la cátedra) corre sin los
+      # secrets: GitHub no se los pasa. Ahí el plan se saltea y el PR queda con validate;
+      # corrido a mano, en cambio, faltar las credenciales es un error.
       - name: Verificar credenciales
+        id: credenciales
         run: |
           if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+              echo "::notice::Sin credenciales de AWS (pull request desde un fork): se saltea el plan."
+              {
+                echo '### terraform plan'
+                echo
+                echo 'Salteado: el pull request no tiene acceso a los secrets de AWS. El plan corre en **Deploy** o a mano en este workflow.'
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "disponibles=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::error::Faltan los secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY y AWS_SESSION_TOKEN."
             exit 1
           fi
           aws sts get-caller-identity --query Arn --output text
+          echo "disponibles=true" >> "$GITHUB_OUTPUT"
 
       - name: init
+        if: steps.credenciales.outputs.disponibles == 'true'
         working-directory: .
         run: make init
 
       - name: tag de la imagen
+        if: steps.credenciales.outputs.disponibles == 'true'
         working-directory: .
         run: echo "TF_VAR_image_tag=$(make -s tag)" >> "$GITHUB_ENV"
 
       - name: plan
+        if: steps.credenciales.outputs.disponibles == 'true'
         run: |
           terraform plan -no-color -lock=false -out=tfplan | tee plan.txt
           {

@@ -54,7 +54,7 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
 | Workflow | Cuándo corre | Qué hace |
 |---|---|---|
-| **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
+| **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run. En un pull request desde un fork (como el de la entrega) GitHub no pasa los secrets: el plan se saltea con un aviso y el check queda en verde con `validate` |
 | **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
 | **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después el bucket del state |
 

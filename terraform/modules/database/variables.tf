@@ -19,6 +19,11 @@ variable "password" {
   sensitive   = true
 }
 
+variable "kms_key_arn" {
+  description = "Clave KMS del almacenamiento, los backups y los snapshots. Cambiarla recrea la instancia."
+  type        = string
+}
+
 variable "port" {
   description = "Puerto de PostgreSQL."
   type        = number

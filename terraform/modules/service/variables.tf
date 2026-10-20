@@ -34,9 +34,15 @@ variable "memory" {
 }
 
 variable "environment" {
-  description = "Variables de entorno del contenedor. Lleva secretos: es sensible."
+  description = "Variables de entorno del contenedor. Sin secretos: quedan a la vista en la task definition."
   type        = map(string)
-  sensitive   = true
+  default     = {}
+}
+
+variable "secrets" {
+  description = "Variables secretas: nombre → ARN de Secrets Manager (arn:clave-json::version-id). ECS lee el valor al arrancar la tarea, con el rol de ejecución."
+  type        = map(string)
+  default     = {}
 }
 
 variable "port" {
@@ -95,6 +101,12 @@ variable "schedule_time_zone" {
   description = "Zona horaria de las acciones programadas."
   type        = string
   default     = "America/Argentina/Buenos_Aires"
+}
+
+variable "log_kms_key_arn" {
+  description = "Clave KMS con la que se cifran los logs. null: la de CloudWatch."
+  type        = string
+  default     = null
 }
 
 variable "log_retention_days" {

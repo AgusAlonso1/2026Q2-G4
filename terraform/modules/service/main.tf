@@ -3,6 +3,7 @@ data "aws_region" "current" {}
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/${var.name}"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.log_kms_key_arn
 }
 
 resource "aws_ecs_task_definition" "this" {
@@ -25,6 +26,7 @@ resource "aws_ecs_task_definition" "this" {
       protocol      = "tcp"
     }]
     environment = [for nombre in sort(keys(var.environment)) : { name = nombre, value = var.environment[nombre] }]
+    secrets     = [for nombre in sort(keys(var.secrets)) : { name = nombre, valueFrom = var.secrets[nombre] }]
     logConfiguration = {
       logDriver = "awslogs"
       options = {

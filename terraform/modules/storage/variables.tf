@@ -3,6 +3,11 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "kms_key_arn" {
+  description = "Clave KMS con la que se cifran los objetos (SSE-KMS). Quien lee o escribe necesita permiso sobre ella."
+  type        = string
+}
+
 variable "noncurrent_version_days" {
   description = "Dias que se conserva una versión remplazada o borrada antes de eliminarla."
   type        = number

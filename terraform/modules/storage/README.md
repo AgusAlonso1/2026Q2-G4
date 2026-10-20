@@ -4,6 +4,10 @@ Bucket S3 del proyecto: guarda los meses archivados del ledger. Se accede por el
 endpoint, sin pasar por el NAT. Se cifra con la clave KMS del proyecto (SSE-KMS) y su
 política rechaza los pedidos que no usan HTTPS.
 
+El bucket no lo crea el módulo sino [`scripts/buckets.sh`](../../../scripts/buckets.sh), antes del
+apply: el SCP de AWS Academy niega `s3:GetBucketObjectLockConfiguration`, que `aws_s3_bucket`
+lee cada vez que refresca el bucket. El módulo arma el mismo nombre y lo configura.
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 
@@ -26,7 +30,6 @@ No modules.
 
 | Name | Type |
 |------|------|
-| [aws_s3_bucket.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
 | [aws_s3_bucket_lifecycle_configuration.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_lifecycle_configuration) | resource |
 | [aws_s3_bucket_policy.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_policy) | resource |
 | [aws_s3_bucket_public_access_block.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_public_access_block) | resource |

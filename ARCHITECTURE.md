@@ -187,7 +187,7 @@ nuevo y Destroy no tendría qué destruir.
 
 - **Lo crea `make init`, no Terraform.** El backend necesita el bucket antes del `init`, así que
   no puede ser un recurso del mismo state. `make init` lo crea con la AWS CLI
-  ([`scripts/state-bucket.sh`](scripts/state-bucket.sh)) si no existe (versionado, cifrado y
+  ([`scripts/buckets.sh`](scripts/buckets.sh)) si no existe (versionado, cifrado y
   sin acceso público, que S3 aplica por defecto) y le pasa el nombre al backend con
   `-backend-config`. Por eso [`backend.tf`](terraform/organization/backend.tf) no tiene
   `bucket`.
@@ -200,6 +200,14 @@ nuevo y Destroy no tendría qué destruir.
 - **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
   quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
   próximo `make init` (Deploy o el plan de un pull request) lo vuelve a crear.
+- **Los buckets del proyecto también los crea la CLI.** El del archivo y el del frontend no
+  son `aws_s3_bucket`: el SCP de AWS Academy niega `s3:GetBucketObjectLockConfiguration`, y el
+  provider de AWS lo lee cada vez que refresca un `aws_s3_bucket`, así que el apply no puede
+  terminar. `make apply` los crea con el mismo script justo antes del `terraform apply` (el
+  `plan` de los pull requests no crea nada), y `storage` y `website` arman el mismo nombre y
+  configuran todo lo demás: versionado, cifrado, bloqueo público, política, lifecycle y
+  website, que no leen el object lock. `make destroy` los vacía, con todas sus versiones, y los
+  borra junto con el del state.
 
 ## 7. Trade-offs
 
@@ -215,6 +223,10 @@ nuevo y Destroy no tendría qué destruir.
   del laboratorio, no unos mínimos por componente. Por eso la separación de custodios de la
   clave KMS no es real: en una cuenta propia cada servicio tendría su rol y la política de la
   clave nombraría sólo a los que la necesitan.
+- **Los buckets del proyecto quedan fuera del state** (ver [Estado](#6-estado)). Terraform no
+  se entera si alguien borra uno a mano, `terraform apply` sin `make apply` falla porque no
+  existen, y el nombre se arma en dos lugares: el script y los módulos, con `project_name =
+  "ledger"`.
 - **RDS Multi-AZ** aunque duplique el tiempo del primer apply: la base es lo único con estado y
   sigue disponible si se cae una zona. `db_multi_az = false` la deja en una sola AZ para probar.
 

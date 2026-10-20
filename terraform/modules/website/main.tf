@@ -1,7 +1,12 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+# El bucket no es un aws_s3_bucket: lo crea scripts/buckets.sh (el SCP de AWS Academy no deja
+# leer su object lock, y el provider lo lee en cada refresh). Acá sólo se configura.
 locals {
+  bucket_name = format("%s-%s-%s-an", var.name_prefix, data.aws_caller_identity.current.account_id, data.aws_region.current.region)
+  bucket_arn  = "arn:aws:s3:::${local.bucket_name}"
+
   site_files = {
     for path in fileset(var.site_dir, "**") :
     path => var.content_types[lower(regex("[^.]*$", path))]
@@ -9,15 +14,8 @@ locals {
   }
 }
 
-resource "aws_s3_bucket" "this" {
-  bucket           = format("%s-%s-%s-an", var.name_prefix, data.aws_caller_identity.current.account_id, data.aws_region.current.region)
-  bucket_namespace = "account-regional"
-
-  force_destroy = true
-}
-
 resource "aws_s3_bucket_website_configuration" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   index_document {
     suffix = var.index_document
@@ -25,7 +23,7 @@ resource "aws_s3_bucket_website_configuration" "this" {
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   block_public_acls       = true
   ignore_public_acls      = true
@@ -36,7 +34,7 @@ resource "aws_s3_bucket_public_access_block" "this" {
 # AES256 y no KMS: los usuarios anónimos del sitio no pueden tener permiso sobre una clave.
 #tfsec:ignore:aws-s3-encryption-customer-key
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   rule {
     apply_server_side_encryption_by_default {
@@ -46,7 +44,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
 }
 
 resource "aws_s3_bucket_policy" "public_read" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -55,7 +53,7 @@ resource "aws_s3_bucket_policy" "public_read" {
       Effect    = "Allow"
       Principal = "*"
       Action    = "s3:GetObject"
-      Resource  = "${aws_s3_bucket.this.arn}/*"
+      Resource  = "${local.bucket_arn}/*"
     }]
   })
 
@@ -65,7 +63,7 @@ resource "aws_s3_bucket_policy" "public_read" {
 resource "aws_s3_object" "site" {
   for_each = local.site_files
 
-  bucket       = aws_s3_bucket.this.id
+  bucket       = local.bucket_name
   key          = each.key
   source       = "${var.site_dir}/${each.key}"
   source_hash  = filemd5("${var.site_dir}/${each.key}")
@@ -77,7 +75,7 @@ resource "aws_s3_object" "site" {
 resource "aws_s3_object" "config" {
   count = length(var.runtime_config) > 0 ? 1 : 0
 
-  bucket        = aws_s3_bucket.this.id
+  bucket        = local.bucket_name
   key           = "config.json"
   content       = jsonencode(var.runtime_config)
   content_type  = var.content_types["json"]

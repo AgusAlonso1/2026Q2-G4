@@ -1,14 +1,15 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
-resource "aws_s3_bucket" "this" {
-  bucket           = format("%s-%s-%s-an", var.name_prefix, data.aws_caller_identity.current.account_id, data.aws_region.current.region)
-  bucket_namespace = "account-regional"
-  force_destroy    = true
+# El bucket no es un aws_s3_bucket: lo crea scripts/buckets.sh (el SCP de AWS Academy no deja
+# leer su object lock, y el provider lo lee en cada refresh). Acá sólo se configura.
+locals {
+  bucket_name = format("%s-%s-%s-an", var.name_prefix, data.aws_caller_identity.current.account_id, data.aws_region.current.region)
+  bucket_arn  = "arn:aws:s3:::${local.bucket_name}"
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   block_public_acls       = true
   block_public_policy     = true
@@ -17,7 +18,7 @@ resource "aws_s3_bucket_public_access_block" "this" {
 }
 
 resource "aws_s3_bucket_policy" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -26,7 +27,7 @@ resource "aws_s3_bucket_policy" "this" {
       Effect    = "Deny"
       Principal = "*"
       Action    = "s3:*"
-      Resource  = [aws_s3_bucket.this.arn, "${aws_s3_bucket.this.arn}/*"]
+      Resource  = [local.bucket_arn, "${local.bucket_arn}/*"]
       Condition = { Bool = { "aws:SecureTransport" = "false" } }
     }]
   })
@@ -35,7 +36,7 @@ resource "aws_s3_bucket_policy" "this" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
@@ -47,7 +48,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
 }
 
 resource "aws_s3_bucket_versioning" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   versioning_configuration {
     status = "Enabled"
@@ -55,7 +56,7 @@ resource "aws_s3_bucket_versioning" "this" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "this" {
-  bucket = aws_s3_bucket.this.id
+  bucket = local.bucket_name
 
   rule {
     id     = "noncurrent-versions"

@@ -6,6 +6,10 @@ Sube cada archivo de `site_dir` con su `Content-Type`, y sólo publica las exten
 declaradas en `content_types`. Además publica `config.json` a partir de `runtime_config`:
 la URL de la API y las de login y logout de Cognito, que no existen hasta el apply.
 
+El bucket no lo crea el módulo sino [`scripts/buckets.sh`](../../../scripts/buckets.sh), antes del
+apply: el SCP de AWS Academy niega `s3:GetBucketObjectLockConfiguration`, que `aws_s3_bucket`
+lee cada vez que refresca el bucket. El módulo arma el mismo nombre y lo configura.
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 
@@ -28,7 +32,6 @@ No modules.
 
 | Name | Type |
 |------|------|
-| [aws_s3_bucket.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket) | resource |
 | [aws_s3_bucket_policy.public_read](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_policy) | resource |
 | [aws_s3_bucket_public_access_block.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_public_access_block) | resource |
 | [aws_s3_bucket_server_side_encryption_configuration.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_server_side_encryption_configuration) | resource |
@@ -46,7 +49,7 @@ No modules.
 | <a name="input_index_document"></a> [index\_document](#input\_index\_document) | Documento que sirve el endpoint de website al pedir una carpeta. | `string` | `"index.html"` | no |
 | <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | Prefijo del nombre del bucket. | `string` | n/a | yes |
 | <a name="input_runtime_config"></a> [runtime\_config](#input\_runtime\_config) | Claves que se publican en config.json para el frontend. Vacío: no se publica. | `map(string)` | `{}` | no |
-| <a name="input_site_dir"></a> [site\_dir](#input\_site\_dir) | Carpeta local con los archivos del frontend. Si no existe, el bucket se crea vacío. | `string` | n/a | yes |
+| <a name="input_site_dir"></a> [site\_dir](#input\_site\_dir) | Carpeta local con los archivos del frontend. Si no existe, el bucket queda vacío. | `string` | n/a | yes |
 
 ## Outputs
 

@@ -95,7 +95,7 @@ o como variables de entorno `TF_VAR_*` antes de `make plan`.
 |---|---|---|
 | **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
 | **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
-| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después el bucket del state |
+| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después los buckets (archivo, frontend y state) |
 
 Deploy y Destroy comparten un grupo de `concurrency`: nunca corren a la vez sobre el mismo state.
 
@@ -153,7 +153,7 @@ Después, entrar por `website_url`:
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
 
-Borra todos los recursos y, cuando el state quedó vacío, también el bucket del state (ver
+Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
 [Estado](ARCHITECTURE.md#6-estado)). No queda nada del TP en la cuenta.
 
 ### Desde una máquina local
@@ -165,8 +165,8 @@ mismos pasos que el pipeline:
 make init      # crea el bucket del state si no existe e inicializa terraform/organization
 make imagen    # construye apps/ledger y la sube a ECR (si ese tag ya está, no hace nada)
 make plan      # deja el plan en terraform/organization/tfplan, con ese tag
-make apply     # aplica ese plan
-make destroy   # pide confirmación; borra también el bucket del state
+make apply     # crea los buckets del proyecto si no existen y aplica ese plan
+make destroy   # pide confirmación; borra también los buckets
 ```
 
 `make help` lista el resto (`fmt`, `fmt-check`, `validate`, `clean`). Local y pipeline usan el
@@ -221,7 +221,10 @@ Bucket privado del proyecto: el archivo del ledger (`transaction-history/`) y la
 bloqueo de acceso público y una política que rechaza cualquier pedido que no venga por HTTPS. El lifecycle borra las versiones reemplazadas a
 los 30 días y pasa el archivo a STANDARD_IA a los 30 días y a GLACIER al año.
 
-**Recursos:** `aws_s3_bucket.this`, `aws_s3_bucket_versioning.this`,
+El bucket lo crea `make apply` con la AWS CLI y el módulo lo configura (ver
+[Estado](ARCHITECTURE.md#6-estado)).
+
+**Recursos:** `aws_s3_bucket_versioning.this`,
 `aws_s3_bucket_server_side_encryption_configuration.this`,
 `aws_s3_bucket_public_access_block.this`, `aws_s3_bucket_policy.this` y
 `aws_s3_bucket_lifecycle_configuration.this`.
@@ -235,7 +238,9 @@ objeto por archivo con su `Content-Type`, y publica `config.json` con lo que el 
 puede saber hasta el apply (`api_url`, `login_url`, `logout_url`). Se cifra con AES256 y no con
 KMS: los usuarios anónimos del sitio no pueden tener permiso sobre una clave.
 
-**Recursos:** `aws_s3_bucket.this`, `aws_s3_bucket_website_configuration.this`,
+Como el de `storage`, el bucket lo crea `make apply` con la AWS CLI.
+
+**Recursos:** `aws_s3_bucket_website_configuration.this`,
 `aws_s3_bucket_policy.public_read`, `aws_s3_object.site` y `aws_s3_object.config`.
 
 ---
@@ -371,7 +376,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
 ├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
 ├── scripts/
-│   └── state-bucket.sh    # crea y borra el bucket del state
+│   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
 ├── terraform/
 │   ├── organization/      # composición raíz: acá se corre terraform
 │   └── modules/           # módulos propios

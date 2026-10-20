@@ -31,6 +31,8 @@ locals {
   services = {
     api = {
       command           = ["/api"]
+      instance_type     = var.api_instance_type
+      target_capacity   = 80 # lugar libre: una tarea nueva no espera a que se lance una instancia
       cpu               = 1024
       memory            = 512
       port              = var.app_port
@@ -54,6 +56,8 @@ locals {
     }
     archive = {
       command           = ["/archivador"]
+      instance_type     = var.archive_instance_type
+      target_capacity   = 100
       cpu               = 512
       memory            = 256
       port              = null

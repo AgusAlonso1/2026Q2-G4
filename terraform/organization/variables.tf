@@ -40,8 +40,14 @@ variable "lab_role_name" {
   default     = "LabRole"
 }
 
-variable "instance_type" {
-  description = "Tipo de instancia de los hosts de ECS. Con red awsvpc, una t3.micro aloja una sola tarea."
+variable "api_instance_type" {
+  description = "Tipo de instancia de los hosts de la API. Graviton (arm64) y no burstable: CPU constante bajo carga, y con 3 ENIs aloja dos tareas. También sirve uno x86 (c7i.large): la imagen se construye para las dos arquitecturas. AWS Academy permite hasta el tamaño large."
+  type        = string
+  default     = "c7g.large"
+}
+
+variable "archive_instance_type" {
+  description = "Tipo de instancia del host del archivador. Burstable alcanza: es un batch de una tarea, unas horas por día. En una cuenta propia sería Spot, que AWS Academy no habilita."
   type        = string
   default     = "t3.micro"
 }

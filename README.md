@@ -42,7 +42,7 @@ Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions*
 |---|---|
 | Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
 | AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`), sólo para correr desde una máquina local |
-| Docker | Sólo para correr desde una máquina local: `make imagen` construye la imagen del backend |
+| Docker | Sólo para correr desde una máquina local, con `buildx` (lo trae Docker Desktop): `make imagen` construye la imagen del backend para amd64 y arm64 |
 | Cuenta | AWS Academy: usa `LabRole` y `LabInstanceProfile`, que ya existen en el laboratorio |
 
 Para desplegar desde GitHub Actions no hace falta nada instalado localmente: alcanza con los
@@ -276,7 +276,8 @@ ECS registra solo, y el health check es HTTP a `/health`.
 ### [`modules/capacity`](terraform/modules/capacity)
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
-SSM) e IMDSv2 obligatorio, un ASG y el capacity provider que lo escala según las tareas.
+SSM, de la arquitectura del tipo de instancia: x86 o Graviton) e IMDSv2 obligatorio, un ASG y
+el capacity provider que lo escala según las tareas, con un `target_capacity` por servicio.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.
@@ -326,6 +327,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `length` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
+| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia es Graviton |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 | `alltrue`, `contains` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea y que la retención de los logs sea una que acepta CloudWatch |
@@ -348,7 +350,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
-| `validation` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf` | `archive_schedule` sólo acepta 0 o 1 tarea, y `log_retention_days` sólo los valores de CloudWatch: un error falla en el `plan`, no en el apply |
+| `validation` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf`, `modules/capacity/variables.tf` | `archive_schedule` sólo acepta 0 o 1 tarea, `log_retention_days` sólo los valores de CloudWatch y `target_capacity` de 1 a 100: un error falla en el `plan`, no en el apply |
 
 ### Data sources
 
@@ -358,7 +360,8 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
 | `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service` | La región, sin pasarla como variable a cada módulo |
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
-| `aws_ssm_parameter` | `organization/providers.tf` | La AMI optimizada para ECS recomendada, sin fijar un ID |
+| `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
+| `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |
 | `archive_file` | `modules/auth/main.tf` | El zip de la Lambda del callback |
 
 ---

@@ -70,11 +70,11 @@ module "capacity" {
   name                 = "${local.name_prefix}-${each.key}"
   cluster_name         = aws_ecs_cluster.this.name
   subnet_ids           = each.value.subnet_ids
-  ami_id               = data.aws_ssm_parameter.ecs_ami.insecure_value
-  instance_type        = var.instance_type
+  instance_type        = each.value.instance_type
   instance_profile_arn = data.aws_iam_instance_profile.lab.arn
   security_group_id    = module.security_groups.ids.host
   max_size             = each.value.max_count + 1
+  target_capacity      = each.value.target_capacity
 }
 
 module "service" {

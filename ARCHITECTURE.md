@@ -20,8 +20,8 @@ Restricciones que guían el diseño:
 - **Reproducible desde el pipeline**: todo vive en código y se despliega y destruye desde
   GitHub Actions, en cualquier cuenta, sin editar nada. Los nombres que tienen que ser únicos
   llevan el ID de la cuenta.
-- **Costo acotado**: un solo NAT, instancias `t3.micro` y el archivador apagado fuera de su
-  ventana.
+- **Costo acotado**: un solo NAT, la API en Graviton (más barato que x86 a igual tamaño) y el
+  archivador en una `t3.micro`, apagada fuera de su ventana.
 
 ## 2. Red
 
@@ -50,19 +50,54 @@ Las instancias (`host`) no aceptan ninguna conexión entrante: no hay SSH.
 ## 3. Cómputo
 
 La API y el archivador corren en **ECS con launch type EC2**, desde la misma imagen (cada
-servicio elige `/api` o `/archivador`). Cada servicio tiene su propio ASG, en sus propias
-subredes:
+servicio elige `/api` o `/archivador`), construida para amd64 y arm64. Cada servicio tiene su
+propio ASG, en sus propias subredes:
 
 | | API | Archivador |
 |---|---|---|
 | Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet |
 | Tareas | 2 a 6, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
-| Instancias | Las que hagan falta para esas tareas | 0 fuera de la ventana |
+| Tipo de instancia | `c7g.large` (Graviton), dos tareas por instancia | `t3.micro`, una tarea |
+| Instancias | Las que hagan falta para esas tareas, con lugar libre | 0 fuera de la ventana |
 | Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 |
 
 Hay **dos niveles de escalado**: el servicio decide cuántas tareas quiere (por CPU o por
 horario) y el capacity provider agrega o apaga instancias para alojarlas. Con red `awsvpc`
-cada tarea tiene su propia ENI y su security group, y una t3.micro aloja una sola tarea.
+cada tarea tiene su propia ENI y su security group, y la instancia se queda una para ella: una
+`c7g.large` (3 ENIs) aloja dos tareas y una `t3.micro` (2 ENIs), una sola.
+
+El capacity provider de la API apunta a tener ocupado el 80 % de las instancias
+(`target_capacity`), así que siempre queda lugar libre: una tarea nueva, por scale-out o por
+deploy, arranca sin esperar a que se lance una instancia, y el capacity provider lanza la
+siguiente en segundo plano. El del archivador queda en 100 %: no tiene picos, y fuera de su
+ventana baja a cero instancias.
+
+**Por qué EC2 y no Fargate.** La API es una carga base constante: un PSP no baja a cero y
+siempre hay dos tareas corriendo. Para eso EC2 sale más barato por vCPU que Fargate (y en una
+cuenta propia se le suman Savings Plans), deja elegir el hardware y permite que una tarea use
+en un pico la CPU que el host tiene libre, que en Fargate es un límite fijo. Las contras son el
+escalado en dos niveles, más lento, que compensa el lugar libre de arriba, y los parches de las
+instancias, que quedan a cargo nuestro: el launch template toma en cada apply la AMI
+recomendada, pero sólo la usan las instancias nuevas.
+
+**Por qué esos tipos de instancia.** AWS Academy permite hasta el tamaño `large`. La API
+corre en `c7g.large`: no es burstable, así que su CPU no depende de créditos; Graviton cuesta
+menos que x86 a igual tamaño, y sus 2 vCPU coinciden con las dos tareas de 1 vCPU que le
+permiten sus ENIs. El archivador es un batch de una tarea, unas horas por día, que nadie
+espera: alcanza una `t3.micro`, cuya CPU en ráfaga cubre justo esa ventana. En una cuenta
+propia iría en **Spot**, que AWS Academy no habilita. El archivado se puede retomar: cada
+período es una fila de `tareas` que se toma con `FOR UPDATE SKIP LOCKED` y, si la instancia se
+interrumpe, se reintenta, así que una interrupción sólo lo atrasa. Se configuraría con un ASG
+con `mixed_instances_policy` sin On-Demand, varios tipos chicos para tener más pools de Spot y
+`ECS_ENABLE_SPOT_INSTANCE_DRAINING=true`, para que ECS saque la tarea con el aviso de dos
+minutos.
+
+**Agente de ECS.** El `user_data` de las instancias, además del cluster, configura
+`ECS_IMAGE_PULL_BEHAVIOR=prefer-cached`, que reutiliza la imagen si ya está en el host (es
+seguro porque los tags de ECR son inmutables), y `ECS_AWSVPC_BLOCK_IMDS=true`, que impide que
+las tareas lean las credenciales de la instancia del servicio de metadatos: usan las suyas, las
+del task role. En el laboratorio las dos son `LabRole`, pero en una cuenta propia el rol de la
+instancia tiene permisos que la tarea no necesita.
 
 El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
 subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
@@ -86,10 +121,11 @@ cuenta, y por eso ahí la política lista los buckets.
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS levanta las tareas nuevas antes de bajar las viejas: puede llegar al doble de
-tareas y nunca baja de la mitad. Una tarea nueva de la API recibe tráfico recién cuando pasa el
-health check del NLB, y si las nuevas no arrancan, el circuit breaker vuelve solo a la revisión
-anterior. El tope de conexiones a la base de cada tarea se calcula para ese doble, así que un
-deploy no agota las conexiones de RDS.
+tareas y nunca baja de las que había, así que la API no pierde capacidad durante un deploy; las
+primeras tareas nuevas entran en el lugar libre de las instancias. Una tarea nueva de la API
+recibe tráfico recién cuando pasa el health check del NLB, y si las nuevas no arrancan, el
+circuit breaker vuelve solo a la revisión anterior. El tope de conexiones a la base de cada
+tarea se calcula para ese doble, así que un deploy no agota las conexiones de RDS.
 
 El cluster tiene **Container Insights**: CPU, memoria y red por servicio y por tarea en
 CloudWatch, sin instalar nada en las instancias.
@@ -215,6 +251,9 @@ nuevo y Destroy no tendría qué destruir.
   del laboratorio, no unos mínimos por componente. Por eso la separación de custodios de la
   clave KMS no es real: en una cuenta propia cada servicio tendría su rol y la política de la
   clave nombraría sólo a los que la necesitan.
+- **Archivador en On-Demand**: en una cuenta propia iría en Spot, que AWS Academy no habilita
+  (ver [Cómputo](#3-cómputo)). Corre unas horas por día en una `t3.micro`, así que la
+  diferencia de costo es chica.
 - **RDS Multi-AZ** aunque duplique el tiempo del primer apply: la base es lo único con estado y
   sigue disponible si se cae una zona. `db_multi_az = false` la deja en una sola AZ para probar.
 

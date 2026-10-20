@@ -13,13 +13,8 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
-variable "ami_id" {
-  description = "AMI optimizada para ECS: ya trae Docker y el agente."
-  type        = string
-}
-
 variable "instance_type" {
-  description = "Tipo de instancia. Con red awsvpc, una t3.micro aloja una sola tarea."
+  description = "Tipo de instancia. La AMI optimizada para ECS (Docker y el agente) se elige según su arquitectura. Con red awsvpc cada tarea usa una ENI y la instancia se queda una: con 3 ENIs (large) entran dos tareas, con 2 (micro) una sola."
   type        = string
 }
 
@@ -34,6 +29,17 @@ variable "security_group_id" {
 }
 
 variable "max_size" {
-  description = "Máximo de instancias: una por tarea, más una para la tarea nueva durante un deploy."
+  description = "Máximo de instancias. Es un techo: el capacity provider lanza sólo las que hacen falta para las tareas."
   type        = number
+}
+
+variable "target_capacity" {
+  description = "Porcentaje de las instancias que el capacity provider quiere ocupadas. Con 100 no sobra ninguna; con menos deja lugar libre, y una tarea nueva arranca sin esperar a que se lance una instancia."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.target_capacity >= 1 && var.target_capacity <= 100
+    error_message = "target_capacity va de 1 a 100."
+  }
 }

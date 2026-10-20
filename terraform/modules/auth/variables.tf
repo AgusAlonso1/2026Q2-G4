@@ -42,7 +42,7 @@ variable "token_validity_hours" {
 }
 
 variable "kms_key_arn" {
-  description = "Clave KMS de los logs de la Lambda y del secreto con el client secret. null: las que administra AWS."
+  description = "Clave KMS de los logs (Lambda y access logs de API Gateway) y del secreto con el client secret. null: las que administra AWS."
   type        = string
   default     = null
 }

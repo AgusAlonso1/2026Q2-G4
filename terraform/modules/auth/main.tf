@@ -139,6 +139,7 @@ resource "aws_apigatewayv2_route" "this" {
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/apigateway/${var.name_prefix}-auth"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.kms_key_arn
 }
 
 resource "aws_apigatewayv2_stage" "default" {

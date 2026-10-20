@@ -175,8 +175,10 @@ cada tarea tiene su propia ENI y su security group, y una t3.micro aloja una sol
 El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
 subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
 `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`); las capas de la imagen vienen de
-S3 por el gateway endpoint. Las instancias de la API usan los mismos endpoints, así que el
-NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
+S3 por el gateway endpoint. Las ENIs de los endpoints están en las subredes de `app`, pero se
+llega a ellas desde cualquier subred de la VPC: lo que limita quién entra es su security group,
+que sólo acepta a los hosts de ECS. Las instancias de la API usan los mismos endpoints, así que
+el NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a una, esperando el health check del NLB, y si las

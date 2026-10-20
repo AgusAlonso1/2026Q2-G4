@@ -35,7 +35,7 @@ module "auth" {
   frontend_url        = module.website.website_url
   lambda_role_arn     = data.aws_iam_role.lab.arn
   callback_source_dir = "${path.root}/../../apps/callback"
-  log_kms_key_arn     = aws_kms_key.this.arn
+  kms_key_arn         = aws_kms_key.this.arn
 }
 
 module "database" {

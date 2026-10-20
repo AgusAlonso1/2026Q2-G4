@@ -68,6 +68,18 @@ resource "aws_cognito_user_pool_client" "this" {
   }
 }
 
+resource "aws_secretsmanager_secret" "client" {
+  name                    = "${var.name_prefix}/callback"
+  description             = "Client secret del app client de Cognito, para la Lambda del callback"
+  kms_key_id              = var.kms_key_arn
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "client" {
+  secret_id     = aws_secretsmanager_secret.client.id
+  secret_string = aws_cognito_user_pool_client.this.client_secret
+}
+
 data "archive_file" "callback" {
   type        = "zip"
   source_dir  = var.callback_source_dir
@@ -77,7 +89,7 @@ data "archive_file" "callback" {
 resource "aws_cloudwatch_log_group" "callback" {
   name              = "/aws/lambda/${var.name_prefix}-callback"
   retention_in_days = var.log_retention_days
-  kms_key_id        = var.log_kms_key_arn
+  kms_key_id        = var.kms_key_arn
 }
 
 resource "aws_lambda_function" "callback" {
@@ -94,7 +106,7 @@ resource "aws_lambda_function" "callback" {
     variables = {
       COGNITO_DOMAIN_URL = local.domain_url
       CLIENT_ID          = aws_cognito_user_pool_client.this.id
-      CLIENT_SECRET      = aws_cognito_user_pool_client.this.client_secret
+      CLIENT_SECRET_ARN  = aws_secretsmanager_secret.client.arn
       CALLBACK_URL       = local.callback_url
       FRONTEND_URL       = var.frontend_url
     }

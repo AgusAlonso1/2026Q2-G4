@@ -1,7 +1,18 @@
 // Callback HTTPS de Cognito (workaround del redirect).
 
-const { COGNITO_DOMAIN_URL, CLIENT_ID, CLIENT_SECRET, CALLBACK_URL } = process.env;
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+
+const { COGNITO_DOMAIN_URL, CLIENT_ID, CLIENT_SECRET_ARN, CALLBACK_URL } = process.env;
 const FRONTEND_URL = process.env.FRONTEND_URL.replace(/\/$/, "");
+
+const secretsManager = new SecretsManagerClient({});
+let clientSecret;
+
+// Una lectura por instancia de la Lambda. Si falla no queda guardado: se reintenta en el próximo login.
+const leerClientSecret = async () => {
+  clientSecret ??= (await secretsManager.send(new GetSecretValueCommand({ SecretId: CLIENT_SECRET_ARN }))).SecretString;
+  return clientSecret;
+};
 
 export const handler = async (event) => {
   if (event.rawPath === "/logout") {
@@ -18,11 +29,18 @@ export const handler = async (event) => {
     return back({ error: "missing_code", state });
   }
 
+  let secret;
+  try {
+    secret = await leerClientSecret();
+  } catch {
+    return back({ error: "token_exchange_failed", state });
+  }
+
   const res = await fetch(`${COGNITO_DOMAIN_URL}/oauth2/token`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64")}`,
+      Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${secret}`).toString("base64")}`,
     },
     body: new URLSearchParams({
       grant_type: "authorization_code",

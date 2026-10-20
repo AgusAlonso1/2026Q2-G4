@@ -57,13 +57,17 @@ locals {
     }
   }
 
+  # En un deploy cada servicio llega al doble de max_count (deployment_maximum_percent = 200).
+  db_pool_size = floor(var.db_max_connections / sum([for s in values(local.services) : 2 * s.max_count]))
+  db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
+
   # Aparte de services: llevan secretos, y for_each no acepta valores sensibles.
   mock_api_key = coalesce(var.mock_api_key, random_password.this["mock"].result)
 
   environments = {
     api = {
       APP_PORT          = tostring(var.app_port)
-      DB_URL            = module.database.url
+      DB_URL            = local.db_url
       S3_BUCKET         = module.storage.bucket_name
       AWS_REGION        = var.aws_region
       COGNITO_ISSUER    = module.auth.issuer
@@ -76,7 +80,7 @@ locals {
       WEBHOOK_SECRET    = coalesce(var.webhook_secret, random_password.this["webhook"].result)
     }
     archive = {
-      DB_URL     = module.database.url
+      DB_URL     = local.db_url
       S3_BUCKET  = module.storage.bucket_name
       AWS_REGION = var.aws_region
     }

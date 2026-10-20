@@ -64,6 +64,12 @@ variable "db_multi_az" {
   default     = true
 }
 
+variable "db_max_connections" {
+  description = "Conexiones a la base que se reparten entre todas las tareas. Tiene que quedar por debajo del max_connections de db_instance_class (unas 80 en db.t3.micro), con margen para conectarse a mano."
+  type        = number
+  default     = 60
+}
+
 variable "image_tag" {
   description = "Tag de la imagen del backend en ECR. make imagen la sube con el commit actual y make plan lo pasa solo."
   type        = string

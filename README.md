@@ -148,7 +148,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `floor`, `sum` | `organization/locals.tf` | Reparte `db_max_connections` entre las tareas: el tope de cada una va en la `DB_URL` (`pool_max_conns`) |
 | `fileset` | `modules/website/main.tf` | Lista los archivos del frontend para subir uno por uno |
 | `regex`, `lower`, `contains`, `keys` | `modules/website/main.tf` | Saca la extensión y publica sólo los tipos conocidos |
-| `jsonencode` | `modules/website/main.tf`, `modules/storage/main.tf`, `organization/network.tf` | Arma la política de lectura pública del sitio, la que exige TLS en el bucket del proyecto y la del endpoint de S3 |
+| `jsonencode` | `modules/website/main.tf`, `modules/storage/main.tf`, `organization/network.tf` | Arma la política de lectura pública del sitio, la que exige TLS en el bucket del proyecto y las de los endpoints |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `toset` | `modules/auth/main.tf` | Una ruta de API Gateway por elemento (`/callback`, `/logout`) |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
@@ -201,6 +201,12 @@ Todo el tráfico de la VPC hacia S3 pasa por el gateway endpoint, también el de
 comprometida no puede copiar datos a un bucket de otra cuenta. El security group no alcanza
 para eso, porque la prefix list de S3 incluye todos los buckets. El bucket, por su lado, rechaza
 cualquier pedido que no venga por HTTPS.
+
+Los interface endpoints, en cambio, sólo aceptan credenciales de la propia cuenta. Lo que pasa
+por ellos lo firma el rol de las instancias, así que el agente, la descarga de la imagen y los
+logs no cambian, pero nadie puede usarlos con credenciales de otra cuenta para mandar datos
+afuera. En S3 esa condición no sirve: las capas de ECR se bajan con URLs que firma AWS, no la
+cuenta, y por eso ahí la política lista los buckets.
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a una, esperando el health check del NLB, y si las

@@ -91,6 +91,19 @@ resource "aws_vpc_endpoint" "interface" {
   security_group_ids  = [module.security_groups.ids.endpoints]
   private_dns_enabled = true
 
+  # Sólo credenciales de esta cuenta: así no sirve para mandar datos a otra.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "OwnAccountPrincipals"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "*"
+      Resource  = "*"
+      Condition = { StringEquals = { "aws:PrincipalAccount" = data.aws_caller_identity.current.account_id } }
+    }]
+  })
+
   tags = {
     Name = "${local.name_prefix}-vpce-${replace(each.key, ".", "-")}"
   }

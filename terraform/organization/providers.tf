@@ -10,6 +10,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 # AWS Academy no permite crear IAM: las instancias usan el perfil que trae el laboratorio.
 data "aws_iam_instance_profile" "lab" {
   name = var.instance_profile_name

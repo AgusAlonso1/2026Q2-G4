@@ -2,14 +2,37 @@
 
 Cloud Computing · ITBA · 2026Q2 · Grupo 4
 
-TODO: una línea de qué es el sistema y link a la arquitectura.
+Núcleo transaccional de un PSP (proveedor de servicios de pago) desplegado en AWS con Terraform.
+Cada usuario tiene una cuenta virtual con la que transfiere a otras cuentas, ingresa y retira
+dinero hacia el exterior a través de un proveedor; cada operación se liquida dentro del mismo
+request contra un ledger de partida doble en PostgreSQL, y los meses viejos se archivan en S3.
 
-TODO: diagrama actualizado (`docs/arquitectura.png`), alineado con este código.
+La arquitectura detallada está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-TODO: flujo de datos en pasos numerados (frontend → login → API → base → archivador).
+TODO: diagrama actualizado (`img/arquitectura.png`), alineado con este código.
 
-El despliegue se hace desde **GitHub Actions**: el workflow **Deploy** aplica todo el Terraform
-en la cuenta de AWS cuyos secrets tenga el repositorio, y **Destroy** lo borra todo.
+**Flujo de datos:**
+
+1. El navegador baja el frontend del bucket público de S3 (`website_url`) y su `config.json`,
+   que Terraform genera con las URL de la API y del login.
+2. El login pasa por la Hosted UI de Cognito, que vuelve a un callback HTTPS en API Gateway: una
+   Lambda canjea el `code` por tokens y redirige al frontend con ellos.
+3. El frontend llama a la API con el access token por el NLB público. El NLB reparte entre las
+   tareas de la API, que corren en ECS sobre EC2 en las subredes de `app` de las dos AZ.
+4. La API valida el token contra Cognito y liquida cada operación en RDS PostgreSQL Multi-AZ, en
+   las subredes de `data`.
+5. Los ingresos y egresos hacia el exterior van al proveedor por el NAT. Por defecto es el
+   proveedor simulado que trae la propia API en `/servicio-mock`. Si hay `webhook_url`, la API
+   avisa ahí cada orden terminada.
+6. Todos los días, en la ventana de archivado, ECS levanta una tarea del archivador en las
+   subredes de `archive`, que no tienen salida a Internet. Mueve a S3 (`transaction-history/`)
+   los meses que superan la retención, por el gateway endpoint.
+7. El extracto de un mes archivado lo arma la API leyendo ese objeto de S3; las exportaciones
+   del histórico también quedan en el bucket (`exports/`).
+
+Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions**: el workflow
+**Deploy** aplica todo el Terraform en la cuenta de AWS cuyos secrets tenga el repositorio, y
+**Destroy** lo borra todo.
 
 ---
 
@@ -41,18 +64,18 @@ secrets del paso 1.
 
 En el repositorio, **Settings → Secrets and variables → Actions → New repository secret**:
 
-| Secret | Para qué |
-|---|---|
-| `AWS_ACCESS_KEY_ID` | Access key del laboratorio de AWS Academy |
-| `AWS_SECRET_ACCESS_KEY` | Secret access key del laboratorio |
-| `AWS_SESSION_TOKEN` | Session token del laboratorio |
+| Secret | Obligatorio | Para qué |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | Sí | Access key del laboratorio de AWS Academy |
+| `AWS_SECRET_ACCESS_KEY` | Sí | Secret access key del laboratorio |
+| `AWS_SESSION_TOKEN` | Sí | Session token del laboratorio |
 
 Los tres salen de **AWS Details → AWS CLI** en el laboratorio y vencen con la sesión: hay que
 volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
-### 2. Workflows
+### 2. Workflows configurados
 
-| Workflow | Cuándo corre | Qué hace |
+| Workflow | Cuándo corre / confirmación | Qué hace |
 |---|---|---|
 | **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
 | **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
@@ -74,7 +97,8 @@ en la rama del PR: hacer `git pull` antes de seguir pusheando.
 
 ### 4. Probar
 
-Con las URL del resumen del run, verificar que la API responde:
+Con las URL del resumen del run, verificar que la API responde, con el estado del proceso y de
+la base:
 
 ```bash
 curl <api_url>/health
@@ -102,11 +126,11 @@ Después, entrar por `website_url`:
 4. **Operación** muestra la salud y qué tarea atendió, el proveedor activo, el cierre contable,
    el archivado, el extracto y la exportación, y la cinta de llamadas a la API con su código y
    su latencia. Las tarjetas de `/admin/*` y del mock piden las claves (menú de la cuenta →
-   *Claves de operación*), que son variables de entorno de la tarea de la API:
+   *Claves de operación*), que están en el secreto `ledger/api` de Secrets Manager:
 
    ```bash
-   aws ecs describe-task-definition --task-definition ledger-api --output text \
-     --query "taskDefinition.containerDefinitions[0].environment[?name=='ADMIN_API_KEY' || name=='MOCK_API_KEY'].[name,value]"
+   aws secretsmanager get-secret-value --secret-id ledger/api --query SecretString --output text \
+     | jq '{ADMIN_API_KEY, MOCK_API_KEY}'
    ```
 
 ### 5. Destruir al terminar
@@ -114,7 +138,7 @@ Después, entrar por `website_url`:
 **Actions → Destroy → Run workflow** → escribir `destroy`.
 
 Borra todos los recursos y, cuando el state quedó vacío, también el bucket del state (ver
-[Estado](#estado)). No queda nada del TP en la cuenta.
+[Estado](ARCHITECTURE.md#6-estado)). No queda nada del TP en la cuenta.
 
 ### Desde una máquina local
 
@@ -136,19 +160,133 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 
 ## Módulos
 
-| Módulo | Tipo | Qué crea |
-|---|---|---|
-| `terraform-aws-modules/vpc/aws` | externo | VPC, 8 subredes en 4 capas × 2 AZ, IGW, NAT, tablas de ruteo |
-| `security_groups` | propio | Un SG por capa (`nlb`, `app`, `archive`, `data`), más los de los hosts de ECS y los interface endpoints, con reglas que referencian grupos, no rangos |
-| `storage` | propio | Bucket privado del archivo del ledger: versionado, cifrado con la clave KMS del proyecto (SSE-KMS) y con transiciones a clases más baratas por prefijo |
-| `website` | propio | Bucket público con website hosting (HTTP), los archivos del frontend y su `config.json` |
-| `auth` | propio | User pool de Cognito con Hosted UI, y API Gateway HTTP + Lambda que hacen de callback HTTPS (ver "Login con Cognito") |
-| `database` | propio | RDS PostgreSQL Multi-AZ en la capa de datos, cifrada, sin acceso público |
-| `load_balancer` | propio | NLB público en HTTP:80 con health check HTTP a `/health` y target group de la API, con las IP de las tareas como targets |
-| `capacity` | propio | Instancias de un servicio de ECS: launch template con la AMI optimizada para ECS, ASG y capacity provider |
-| `service` | propio | Servicio de ECS: task definition (variables comunes y secretos desde Secrets Manager), servicio, logs cifrados y autoscaling de las tareas por CPU o por horario |
+La composición raíz es [`terraform/organization`](terraform/organization): instancia los módulos
+y define lo que no pertenece a ninguno: los endpoints de la VPC, el repositorio de ECR y el
+cluster de ECS ([`ecs.tf`](terraform/organization/ecs.tf)), las claves generadas y sus secretos
+de Secrets Manager ([`secrets.tf`](terraform/organization/secrets.tf)) y la clave KMS del
+proyecto ([`kms.tf`](terraform/organization/kms.tf)). Cada módulo propio tiene su README con
+las variables y los outputs.
 
-## Funciones
+### `terraform-aws-modules/vpc/aws` (externo)
+
+VPC `10.0.0.0/16` con 8 subredes en 4 capas × 2 AZ: `public` (NLB y NAT), `app` (API e
+interface endpoints), `archive` (archivador, sin salida a Internet) y `data` (RDS). Crea
+también el IGW, un NAT, las tablas de ruteo de cada capa y el subnet group de la base. Los CIDR
+y los nombres de las subredes se derivan en [`locals.tf`](terraform/organization/locals.tf).
+
+**Recursos propios junto al módulo** ([`network.tf`](terraform/organization/network.tf)):
+
+- `aws_vpc_endpoint.s3`: gateway endpoint de S3 en las tablas de `app` y `archive`, con una
+  política que sólo deja llegar al bucket del proyecto y al de las capas de ECR.
+- `aws_vpc_endpoint.interface`: un interface endpoint por servicio que necesita el agente de
+  ECS (`ecs`, `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`), en
+  las subredes de `app`, que sólo acepta credenciales de la propia cuenta.
+
+**Versión:** `~> 6.7`.
+
+---
+
+### [`modules/security_groups`](terraform/modules/security_groups)
+
+Un security group por capa (`nlb`, `app`, `archive`, `data`), más los de los hosts de ECS
+(`host`) y los interface endpoints (`endpoints`). Las reglas salen de una sola tabla en
+`locals` y referencian grupos o la prefix list de S3, no rangos: sólo el NLB acepta tráfico de
+Internet y sólo la API sale a Internet.
+
+**Recursos:** `aws_security_group.this`, `aws_vpc_security_group_ingress_rule.this` y
+`aws_vpc_security_group_egress_rule.this`.
+
+---
+
+### [`modules/storage`](terraform/modules/storage)
+
+Bucket privado del proyecto: el archivo del ledger (`transaction-history/`) y las exportaciones
+(`exports/`). Versionado, cifrado con la clave KMS del proyecto (SSE-KMS con bucket key), con
+bloqueo de acceso público y una política que rechaza cualquier pedido que no venga por HTTPS. El lifecycle borra las versiones reemplazadas a
+los 30 días y pasa el archivo a STANDARD_IA a los 30 días y a GLACIER al año.
+
+**Recursos:** `aws_s3_bucket.this`, `aws_s3_bucket_versioning.this`,
+`aws_s3_bucket_server_side_encryption_configuration.this`,
+`aws_s3_bucket_public_access_block.this`, `aws_s3_bucket_policy.this` y
+`aws_s3_bucket_lifecycle_configuration.this`.
+
+---
+
+### [`modules/website`](terraform/modules/website)
+
+Bucket público con website hosting (HTTP) para el frontend de [`apps/web`](apps/web). Sube un
+objeto por archivo con su `Content-Type`, y publica `config.json` con lo que el frontend no
+puede saber hasta el apply (`api_url`, `login_url`, `logout_url`). Se cifra con AES256 y no con
+KMS: los usuarios anónimos del sitio no pueden tener permiso sobre una clave.
+
+**Recursos:** `aws_s3_bucket.this`, `aws_s3_bucket_website_configuration.this`,
+`aws_s3_bucket_policy.public_read`, `aws_s3_object.site` y `aws_s3_object.config`.
+
+---
+
+### [`modules/auth`](terraform/modules/auth)
+
+User pool de Cognito con Hosted UI (login por email) y un app client con client secret. Como
+Cognito sólo acepta callbacks HTTPS, suma una HTTP API de API Gateway con las rutas `/callback`
+y `/logout` hacia una Lambda ([`apps/callback`](apps/callback)) que canjea el `code` por tokens
+(ver [Login con Cognito](ARCHITECTURE.md#5-login-con-cognito)). El client secret está en Secrets
+Manager (`ledger/callback`) y la Lambda sólo recibe su ARN. El stage de API Gateway manda un
+access log JSON por request a su propio log group.
+
+**Recursos:** `aws_cognito_user_pool.this`, `aws_cognito_user_pool_domain.this`,
+`aws_cognito_user_pool_client.this`, `aws_secretsmanager_secret.client`,
+`aws_lambda_function.callback`, `aws_apigatewayv2_api.this` y sus rutas, integración y stage.
+
+---
+
+### [`modules/database`](terraform/modules/database)
+
+RDS PostgreSQL Multi-AZ en las subredes de `data`, cifrada con la clave KMS del proyecto y sin
+acceso público. Expone la `DB_URL` de los binarios, con TLS obligatorio.
+
+**Recursos:** `aws_db_instance.this`.
+
+---
+
+### [`modules/load_balancer`](terraform/modules/load_balancer)
+
+NLB público en HTTP:80 con el target group de la API. Los targets son las IP de las tareas, que
+ECS registra solo, y el health check es HTTP a `/health`.
+
+**Recursos:** `aws_lb.this`, `aws_lb_target_group.api` y `aws_lb_listener.http`.
+
+---
+
+### [`modules/capacity`](terraform/modules/capacity)
+
+Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
+SSM) e IMDSv2 obligatorio, un ASG y el capacity provider que lo escala según las tareas.
+
+**Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
+`aws_ecs_capacity_provider.this`.
+
+---
+
+### [`modules/service`](terraform/modules/service)
+
+Un servicio de ECS: task definition con red `awsvpc`, el servicio con circuit breaker, el log
+group cifrado y el autoscaling de las tareas, por CPU (la API) o por horario (el archivador).
+La task definition separa las variables comunes de las secretas: éstas son referencias
+(`valueFrom`) a Secrets Manager, y ECS lee el valor al arrancar la tarea (ver
+[Secretos y cifrado](ARCHITECTURE.md#4-secretos-y-cifrado)).
+
+**Recursos:** `aws_ecs_task_definition.this`, `aws_ecs_service.this`,
+`aws_cloudwatch_log_group.this`, `aws_appautoscaling_target.this`,
+`aws_appautoscaling_policy.cpu` y `aws_appautoscaling_scheduled_action.this`.
+
+`capacity` y `service` se instancian una vez por servicio (API y archivador) con `for_each`
+sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
+
+---
+
+## Funciones y meta-argumentos de Terraform
+
+### Funciones utilizadas
 
 | Función | Dónde | Para qué |
 |---|---|---|
@@ -156,23 +294,27 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `slice` | `organization/locals.tf` | Toma las dos primeras AZ de la región |
 | `range` | `organization/locals.tf` | Una subred por AZ dentro de cada capa |
 | `substr` | `organization/locals.tf` | Saca la letra de la AZ para el nombre de la subred (`ledger-app-a`) |
+| `floor`, `sum`, `values` | `organization/locals.tf` | Reparte `db_max_connections` entre las tareas: el tope de cada una va en la `DB_URL` (`pool_max_conns`) |
+| `coalesce` | `organization/locals.tf` | Usa la clave o la URL que se pasó por variable y, si está vacía, la generada o la propia |
+| `tostring` | `organization/locals.tf` | El puerto de la API como variable de entorno |
 | `concat` | `organization/network.tf` | Asocia el endpoint de S3 a las tablas de app y archivado |
+| `replace` | `organization/network.tf`, `modules/security_groups/main.tf`, `modules/database/main.tf` | Arma nombres: el `Name` de cada endpoint y de cada regla (`app_in_nlb` → `ledger-app-in-nlb`), y el de la base sin guiones |
 | `try` | `modules/security_groups/main.tf` | Usa el SG de destino sólo si el `peer` de la regla es otro grupo |
-| `replace` | `modules/security_groups/main.tf` | Arma el `Name` de cada regla desde su clave (`app_in_nlb` → `ledger-app-in-nlb`) |
-| `format` | `modules/database/outputs.tf` | Arma la `DB_URL` de los binarios desde los atributos de la instancia |
-| `floor`, `sum` | `organization/locals.tf` | Reparte `db_max_connections` entre las tareas: el tope de cada una va en la `DB_URL` (`pool_max_conns`) |
+| `format` | `modules/storage/main.tf`, `modules/website/main.tf`, `modules/auth/main.tf`, `modules/database/outputs.tf` | Arma los nombres de los buckets, la URL del dominio de Cognito y la `DB_URL` |
+| `jsonencode` | `organization/network.tf`, `organization/kms.tf`, `organization/secrets.tf`, `modules/storage/main.tf`, `modules/website/main.tf`, `modules/service/main.tf`, `modules/auth/main.tf` | Las políticas de los endpoints, de la clave KMS y de los buckets, el contenido de cada secreto, el `config.json` del frontend, las `container_definitions` y el formato de los access logs |
+| `nonsensitive` | `organization/main.tf` | Los nombres de las variables secretas no son secretos: así se pueden recorrer para armar cada `valueFrom` |
+| `toset` | `organization/network.tf`, `organization/secrets.tf`, `modules/auth/main.tf` | Un elemento por endpoint, por clave generada y por ruta de API Gateway |
 | `fileset` | `modules/website/main.tf` | Lista los archivos del frontend para subir uno por uno |
 | `regex`, `lower`, `contains`, `keys` | `modules/website/main.tf` | Saca la extensión y publica sólo los tipos conocidos |
-| `jsonencode` | `modules/website/main.tf`, `modules/storage/main.tf`, `organization/network.tf` | Arma la política de lectura pública del sitio, la que exige TLS en el bucket del proyecto y las de los endpoints |
+| `filemd5` | `modules/website/main.tf` | Hash de cada archivo: se vuelve a subir sólo si cambió |
+| `length` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
-| `toset` | `modules/auth/main.tf` | Una ruta de API Gateway por elemento (`/callback`, `/logout`) |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
-| `nonsensitive` | `organization/main.tf` | Los nombres de las variables secretas no son secretos: así se pueden recorrer para armar cada `valueFrom` |
-| `coalesce` | `organization/locals.tf` | Usa la clave o la URL que se pasó por variable y, si está vacía, la generada o la propia |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
+| `alltrue`, `contains` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea y que la retención de los logs sea una que acepta CloudWatch |
 
-## Meta-argumentos
+### Meta-argumentos utilizados
 
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
@@ -180,160 +322,28 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesita el agente de ECS |
 | `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) y un secreto de Secrets Manager por servicio |
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
+| `for_each` | `modules/website/main.tf` | Un objeto de S3 por archivo del frontend |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
+| `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
+| `depends_on` | `modules/storage/main.tf`, `modules/website/main.tf` | La política de cada bucket se aplica después de su bloqueo de acceso público |
+| `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
+| `validation` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf` | `archive_schedule` sólo acepta 0 o 1 tarea, y `log_retention_days` sólo los valores de CloudWatch: un error falla en el `plan`, no en el apply |
 
-## Cómputo
+### Data sources
 
-La API y el archivador corren en **ECS con launch type EC2**, desde la misma imagen (cada
-servicio elige `/api` o `/archivador`). Cada servicio tiene su propio ASG, en sus propias
-subredes:
-
-| | API | Archivador |
+| Data source | Dónde | Para qué |
 |---|---|---|
-| Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet |
-| Tareas | 2 a 6, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
-| Instancias | Las que hagan falta para esas tareas | 0 fuera de la ventana |
-| Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 |
-
-Hay **dos niveles de escalado**: el servicio decide cuántas tareas quiere (por CPU o por
-horario) y el capacity provider agrega o apaga instancias para alojarlas. Con red `awsvpc`
-cada tarea tiene su propia ENI y su security group, y una t3.micro aloja una sola tarea.
-
-El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
-subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
-`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`,
-`secretsmanager`); las capas de la imagen vienen de
-S3 por el gateway endpoint. Las ENIs de los endpoints están en las subredes de `app`, pero se
-llega a ellas desde cualquier subred de la VPC: lo que limita quién entra es su security group,
-que sólo acepta a los hosts de ECS. Las instancias de la API usan los mismos endpoints, así que
-el NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
-
-Todo el tráfico de la VPC hacia S3 pasa por el gateway endpoint, también el de las subredes de
-`app`. Su política sólo deja llegar al bucket del proyecto y al de las capas de ECR: una tarea
-comprometida no puede copiar datos a un bucket de otra cuenta. El security group no alcanza
-para eso, porque la prefix list de S3 incluye todos los buckets. El bucket, por su lado, rechaza
-cualquier pedido que no venga por HTTPS.
-
-Los interface endpoints, en cambio, sólo aceptan credenciales de la propia cuenta. Lo que pasa
-por ellos lo firma el rol de las instancias, así que el agente, la descarga de la imagen y los
-logs no cambian, pero nadie puede usarlos con credenciales de otra cuenta para mandar datos
-afuera. En S3 esa condición no sirve: las capas de ECR se bajan con URLs que firma AWS, no la
-cuenta, y por eso ahí la política lista los buckets.
-
-Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
-definition. ECS reemplaza las tareas de a una, esperando el health check del NLB, y si las
-nuevas no arrancan vuelve solo a la versión anterior.
-
-**Escaneo de la imagen.** El repositorio de ECR tiene `scan_on_push`: cada imagen que sube
-`make imagen` se compara contra la base de vulnerabilidades conocidas (CVE) y el resultado
-queda en la consola de ECR (`aws ecr describe-image-scan-findings`). Es el escaneo básico,
-sin costo, y alcanza para esta imagen: la base es `distroless/static`, sin shell ni gestor de
-paquetes, así que lo que podría aparecer está en las pocas librerías del sistema. El escaneo
-avanzado (Amazon Inspector) revisa además las dependencias de Go, pero se cobra por imagen.
-No bloquea el deploy: informa, y como los tags son inmutables cada versión queda escaneada
-una sola vez, la vez que se sube.
-
-## Secretos y cifrado
-
-Las claves que usan los binarios (la `DB_URL` con la password de la base, la de
-admin, la del mock, la del proveedor y la del webhook) no van en la task definition, donde
-cualquiera con acceso a la consola o a `ecs:DescribeTaskDefinition` las vería. Terraform las
-genera (`random_password`) y las guarda en **Secrets Manager**, un secreto por servicio con
-sólo lo que ese servicio usa: `ledger/api` tiene las cinco, `ledger/archive` sólo la `DB_URL`.
-
-La task definition guarda la referencia, no el valor: cada variable es un `valueFrom` con
-`<arn del secreto>:<clave>::<version-id>`. El agente de ECS lee el secreto con el rol de
-ejecución antes de arrancar el contenedor y se lo pasa como variable de entorno, así que el
-código no cambia. El `version-id` hace que un valor nuevo genere una revisión nueva de la task
-definition, y ECS reemplaza las tareas; sin él seguirían corriendo con el valor viejo. El
-agente llega a Secrets Manager por su interface endpoint, porque las subredes de `archive` no
-salen a Internet.
-
-Los secretos se crean con `recovery_window_in_days = 0`: Secrets Manager reserva por defecto
-el nombre 30 días después de borrarlo, y el siguiente Deploy fallaría por nombre duplicado.
-
-**Clave KMS propia.** Todo se cifra en reposo aun sin ella: con nada indicado, cada servicio
-usa una clave que administra AWS (`aws/secretsmanager`, `aws/rds`, ...). Lo que esas claves
-no permiten es *gestionarlas*: su política no se puede modificar, no se pueden deshabilitar y
-la rotación no la decide uno. Para un PSP eso importa: PCI DSS (requisitos 3.6 y 3.7) pide
-restringir el acceso a las claves criptográficas a la menor cantidad posible de custodios,
-rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `alias/ledger`
-([`kms.tf`](terraform/organization/kms.tf)):
-
-- **Qué cifra:** los secretos de Secrets Manager, el bucket del archivo (SSE-KMS con *bucket
-  key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), el
-  almacenamiento y los backups de RDS, las imágenes de ECR y los logs de ECS y de la Lambda.
-- **Quién la usa:** la política nombra tres principales: la cuenta (sin ese permiso la clave
-  quedaría inadministrable), el `LabRole`, con sólo las operaciones de cifrado (nombrado
-  explícitamente para no depender de lo que permita su política de IAM en el laboratorio) y
-  CloudWatch Logs, limitado a los log groups de la cuenta.
-- **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
-  antes se sigue pudiendo leer.
-- **Retiro:** deshabilitar la clave corta de una vez el acceso a todos esos datos. Al
-  destruir, KMS la programa para borrarse en 7 días (el mínimo); el próximo Deploy crea otra.
-
-El bucket del frontend queda con AES256: lo leen usuarios anónimos por el endpoint de website,
-y un anónimo no puede tener permiso sobre una clave de KMS.
-
-En el laboratorio la separación de custodios no es real: la API, el archivador y la Lambda
-corren todos con el mismo `LabRole`. En una cuenta propia cada servicio tendría su rol y la
-política de la clave nombraría sólo a los que la necesitan.
-
-**Lo que queda.** Los valores siguen en el state de Terraform, porque los genera Terraform; el
-state está en un bucket privado y cifrado. El client secret de Cognito sigue en una variable
-de entorno de la Lambda del callback, cifrada en reposo por Lambda.
-
-## Login con Cognito
-
-Workaround de la cátedra: Cognito sólo acepta callbacks HTTPS y el frontend se sirve por HTTP
-desde S3.
-
-1. El frontend lee `config.json` y redirige a `login_url` agregando `&state=<random>`.
-2. La Hosted UI de Cognito vuelve a `https://<api-gateway>/callback?code=…&state=…`.
-3. La Lambda canjea el `code` por tokens (con el client secret, que sólo tiene ella) y redirige
-   a `<frontend>/#access_token=…&id_token=…&expires_in=…&state=…`.
-4. El frontend valida el `state`, guarda los tokens y limpia la URL.
-5. El frontend llama a la API con `Authorization: Bearer <access_token>`. La API valida la
-   firma contra `<issuer>/.well-known/jwks.json` y comprueba `client_id` y `token_use=access`.
-   Por CORS, sólo acepta pedidos del navegador que vengan de `website_url` (`CORS_ORIGENES`).
-6. La primera vez, `GET /sesiones/actual` devuelve `cuenta_id: null` y el frontend crea la cuenta
-   con `POST /cuentas`. La cuenta queda ligada al `sub` del usuario: cada usuario tiene una sola,
-   y es la única que puede leer y operar (si no, 403).
-
-Si el token vence (según `expires_in`) o la API responde 401, el frontend borra los tokens y
-vuelve a la pantalla de ingreso. Para cerrar sesión, borra los tokens y redirige a `logout_url`. Cognito vuelve por
-`/logout` de API Gateway, porque tampoco acepta logout URLs HTTP.
-
-`config.json` lo genera Terraform (`api_url`, `login_url`, `logout_url`), así que no va en
-`apps/web/`. Los datos para la API (`issuer`, `client_id`) y el `user_pool_id` para crear
-usuarios por CLI están en `terraform output cognito`.
-
-## Estado
-
-El state vive en S3, en `ledger-tfstate-<cuenta>-us-east-1-an`, con la key
-`tp3/terraform.tfstate`. Tiene que ser remoto porque Deploy y Destroy corren en GitHub Actions: con state local se perdería al terminar cada job, el siguiente apply intentaría crear
-todo de nuevo y Destroy no tendría qué destruir.
-
-- **Lo crea `make init`, no Terraform.** El backend necesita el bucket antes del `init`, así que
-  no puede ser un recurso del mismo state. `make init` lo crea con la AWS CLI
-  ([`scripts/state-bucket.sh`](scripts/state-bucket.sh)) si no existe
-  (versionado, cifrado y sin acceso público, que S3 aplica por defecto) y le pasa el nombre al
-  backend con `-backend-config`. Por eso [`backend.tf`](terraform/organization/backend.tf) no
-  tiene `bucket`.
-- **El nombre lleva la cuenta**, en el namespace regional de la cuenta (`-an`), igual que los
-  otros dos buckets: el mismo código despliega en la cuenta del grupo y en la de la cátedra sin
-  editar nada, y nadie más puede ocupar ese nombre.
-- **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). No hace
-  falta una tabla de DynamoDB. El `plan` de los pull requests corre con `-lock=false`: no escribe el state, y así no
-  espera a un deploy en curso.
-- **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
-  quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
-  próximo `make init` (Deploy o el plan de un pull request) lo vuelve a crear.
+| `aws_availability_zones` | `organization/providers.tf` | Las AZ disponibles de la región |
+| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
+| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service` | La región, sin pasarla como variable a cada módulo |
+| `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
+| `aws_ssm_parameter` | `organization/providers.tf` | La AMI optimizada para ECS recomendada, sin fijar un ID |
+| `archive_file` | `modules/auth/main.tf` | El zip de la Lambda del callback |
 
 ---
 
@@ -343,6 +353,7 @@ todo de nuevo y Destroy no tendría qué destruir.
 .
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
+├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
 ├── scripts/
 │   └── state-bucket.sh    # crea y borra el bucket del state
 ├── terraform/
@@ -361,3 +372,5 @@ todo de nuevo y Destroy no tendría qué destruir.
     ├── web/               # frontend estático (lo sube modules/website)
     └── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
 ```
+
+Arquitectura y decisiones de diseño: [`ARCHITECTURE.md`](ARCHITECTURE.md).

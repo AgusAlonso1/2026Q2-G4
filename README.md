@@ -73,6 +73,22 @@ En el repositorio, **Settings → Secrets and variables → Actions → New repo
 Los tres salen de **AWS Details → AWS CLI** en el laboratorio y vencen con la sesión: hay que
 volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
+**Opcional: conectar un proveedor o un webhook externos.** Sin nada de esto el despliegue usa
+el proveedor simulado de la propia API y no avisa a nadie. Para conectarlo con otro sistema (por
+ejemplo, el despliegue de otro equipo), en la misma pantalla se cargan estos valores, que Deploy
+y el plan del workflow Terraform le pasan a Terraform como `TF_VAR_*`:
+
+| Nombre | Pestaña | Variable de Terraform | Vacío |
+|---|---|---|---|
+| `PROVEEDOR_URL` | Variables | `proveedor_url` | La API usa su propio `/servicio-mock` |
+| `PROVEEDOR_API_KEY` | Secrets | `proveedor_api_key` | La clave del mock propio |
+| `MOCK_API_KEY` | Secrets | `mock_api_key` | Se genera una. Fijarla sirve si otro equipo usa este despliegue como proveedor |
+| `WEBHOOK_URL` | Variables | `webhook_url` | La API no avisa las órdenes terminadas |
+| `WEBHOOK_SECRET` | Secrets | `webhook_secret` | Se genera uno. Tiene que coincidir con el del que recibe los avisos |
+
+Desde una máquina local, los mismos valores van en `terraform/organization/terraform.tfvars`
+o como variables de entorno `TF_VAR_*` antes de `make plan`.
+
 ### 2. Workflows configurados
 
 | Workflow | Cuándo corre / confirmación | Qué hace |

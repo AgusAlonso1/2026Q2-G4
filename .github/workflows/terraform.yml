@@ -48,6 +48,11 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: us-east-1
+      TF_VAR_proveedor_url: ${{ vars.PROVEEDOR_URL }}
+      TF_VAR_proveedor_api_key: ${{ secrets.PROVEEDOR_API_KEY }}
+      TF_VAR_mock_api_key: ${{ secrets.MOCK_API_KEY }}
+      TF_VAR_webhook_url: ${{ vars.WEBHOOK_URL }}
+      TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
     steps:
       - uses: actions/checkout@v6
 

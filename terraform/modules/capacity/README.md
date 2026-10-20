@@ -6,4 +6,48 @@ capacity provider agrega instancias cuando hay tareas sin lugar y apaga las que 
 vacías, así que el ASG sigue a las tareas y no tiene política de escalado propia.
 
 <!-- BEGIN_TF_DOCS -->
+## Requirements
+
+| Name | Version |
+|------|---------|
+| <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.9 |
+| <a name="requirement_aws"></a> [aws](#requirement\_aws) | >= 6.28 |
+
+## Providers
+
+| Name | Version |
+|------|---------|
+| <a name="provider_aws"></a> [aws](#provider\_aws) | >= 6.28 |
+
+## Modules
+
+No modules.
+
+## Resources
+
+| Name | Type |
+|------|------|
+| [aws_autoscaling_group.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/autoscaling_group) | resource |
+| [aws_ecs_capacity_provider.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_capacity_provider) | resource |
+| [aws_launch_template.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/launch_template) | resource |
+
+## Inputs
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| <a name="input_ami_id"></a> [ami\_id](#input\_ami\_id) | AMI optimizada para ECS: ya trae Docker y el agente. | `string` | n/a | yes |
+| <a name="input_cluster_name"></a> [cluster\_name](#input\_cluster\_name) | Cluster de ECS al que se unen las instancias. | `string` | n/a | yes |
+| <a name="input_instance_profile_arn"></a> [instance\_profile\_arn](#input\_instance\_profile\_arn) | Instance profile de las instancias. Lo necesita el agente para registrarse en el cluster. | `string` | n/a | yes |
+| <a name="input_instance_type"></a> [instance\_type](#input\_instance\_type) | Tipo de instancia. Con red awsvpc, una t3.micro aloja una sola tarea. | `string` | n/a | yes |
+| <a name="input_max_size"></a> [max\_size](#input\_max\_size) | Máximo de instancias: una por tarea, más una para la tarea nueva durante un deploy. | `number` | n/a | yes |
+| <a name="input_name"></a> [name](#input\_name) | Nombre del launch template, el ASG y el capacity provider. | `string` | n/a | yes |
+| <a name="input_security_group_id"></a> [security\_group\_id](#input\_security\_group\_id) | SG de las instancias. Las tareas usan el suyo propio. | `string` | n/a | yes |
+| <a name="input_subnet_ids"></a> [subnet\_ids](#input\_subnet\_ids) | Subredes de las instancias. El agente llega a ECS, ECR y CloudWatch Logs por los interface endpoints. | `list(string)` | n/a | yes |
+
+## Outputs
+
+| Name | Description |
+|------|-------------|
+| <a name="output_autoscaling_group_name"></a> [autoscaling\_group\_name](#output\_autoscaling\_group\_name) | ASG de las instancias. Lo escala el capacity provider según las tareas. |
+| <a name="output_capacity_provider_name"></a> [capacity\_provider\_name](#output\_capacity\_provider\_name) | Capacity provider que el servicio usa para ubicar sus tareas. |
 <!-- END_TF_DOCS -->

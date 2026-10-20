@@ -4,7 +4,7 @@ variable "name_prefix" {
 }
 
 variable "site_dir" {
-  description = "Carpeta local con los archivos del frontend. Si no existe, el bucket se crea vacío."
+  description = "Carpeta local con los archivos del frontend. Si no existe, el bucket queda vacío."
   type        = string
 }
 

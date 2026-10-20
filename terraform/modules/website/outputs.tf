@@ -1,6 +1,6 @@
 output "bucket_name" {
   description = "Nombre del bucket del frontend."
-  value       = aws_s3_bucket.this.id
+  value       = local.bucket_name
 }
 
 output "website_url" {

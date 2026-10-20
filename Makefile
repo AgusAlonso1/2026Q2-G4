@@ -18,8 +18,8 @@ help:
 	@echo "make tag        Muestra el tag de la imagen: el hash de apps/ledger en el commit actual"
 	@echo "make imagen     Construye la imagen de apps/ledger (amd64 y arm64) y la sube a ECR con ese tag"
 	@echo "make plan       Genera el plan en terraform/organization/tfplan"
-	@echo "make apply      Aplica el plan guardado"
-	@echo "make destroy    Destruye toda la infraestructura y después el bucket del state"
+	@echo "make apply      Crea los buckets del proyecto si no existen y aplica el plan guardado"
+	@echo "make destroy    Destruye toda la infraestructura y después los buckets (proyecto y state)"
 	@echo "make clean      Borra .terraform/ y tfplan"
 
 fmt:
@@ -29,7 +29,7 @@ fmt-check:
 	$(TF) fmt -check -recursive terraform
 
 init:
-	@bucket=$$(scripts/state-bucket.sh create) && \
+	@bucket=$$(scripts/buckets.sh state) && \
 	$(TF) -chdir=$(TF_DIR) init -backend-config="bucket=$$bucket"
 
 validate:
@@ -56,14 +56,15 @@ plan: init
 	$(TF) -chdir=$(TF_DIR) plan -out=tfplan
 
 apply:
+	scripts/buckets.sh create
 	$(TF) -chdir=$(TF_DIR) apply tfplan
 
 destroy: init
 	$(TF) -chdir=$(TF_DIR) destroy $(DESTROY_FLAGS)
 	@if [ -n "$$($(TF) -chdir=$(TF_DIR) state list)" ]; then \
-	  echo "Quedan recursos en el state: no se borra el bucket" >&2; exit 1; \
+	  echo "Quedan recursos en el state: no se borran los buckets" >&2; exit 1; \
 	fi
-	scripts/state-bucket.sh delete
+	scripts/buckets.sh delete
 
 clean:
 	rm -rf $(TF_DIR)/.terraform $(TF_DIR)/tfplan

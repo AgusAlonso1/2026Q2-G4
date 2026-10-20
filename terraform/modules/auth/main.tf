@@ -92,6 +92,9 @@ resource "aws_cloudwatch_log_group" "callback" {
   kms_key_id        = var.kms_key_arn
 }
 
+# Sin X-Ray: en AWS Academy las trazas no se pueden consultar (el usuario del laboratorio no tiene
+# permisos de lectura de X-Ray).
+#tfsec:ignore:aws-lambda-enable-tracing
 resource "aws_lambda_function" "callback" {
   function_name    = "${var.name_prefix}-callback"
   description      = "Canjea el code de Cognito por tokens y redirige al frontend HTTP"

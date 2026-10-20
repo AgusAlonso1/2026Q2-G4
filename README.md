@@ -9,7 +9,7 @@ request contra un ledger de partida doble en PostgreSQL, y los meses viejos se a
 
 La arquitectura detallada está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-TODO: diagrama actualizado (`img/arquitectura.png`), alineado con este código.
+![Diagrama de arquitectura en AWS](img/arquitectura.png)
 
 **Flujo de datos:**
 
@@ -54,7 +54,11 @@ secrets del paso 1.
 
 | Nombre | Legajo |
 |---|---|
-| TODO | |
+| Agustín Alonso | 63316 |
+| Luciano Stupnik | 64233 |
+| Tomás Becerra | 63732 |
+| Valentino Sanguinetti | 63098 |
+| Hannah Hauge Kalager | 69482 |
 
 ---
 
@@ -95,13 +99,21 @@ o como variables de entorno `TF_VAR_*` antes de `make plan`.
 |---|---|---|
 | **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
 | **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
-| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después el bucket del state |
+| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después los buckets (archivo, frontend y state) |
 
 Deploy y Destroy comparten un grupo de `concurrency`: nunca corren a la vez sobre el mismo state.
 
+En un pull request que viene de un fork o de dependabot, GitHub no le pasa los secrets al
+workflow: ahí
+**Terraform** corre `fmt`, `init` y `validate`, y el `plan` aparece como salteado (*skipped*)
+en lugar de fallar por falta de credenciales. El `plan` contra la cuenta corre en los pull
+requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**.
+
 Los workflows de la cátedra (`terraform-format`, `terraform-docs`, `tfsec`) corren en paralelo
-en cada pull request. `terraform-docs` regenera los README de `terraform/modules/` y hace commit
-en la rama del PR: hacer `git pull` antes de seguir pusheando.
+en cada pull request. `terraform-docs` regenera los README de `terraform/modules/` y trata de
+commitearlos en la rama del PR, para lo que necesita que el token del workflow tenga permiso de
+escritura (un PR desde un fork no lo tiene). Los README de los módulos ya se commitean
+generados con terraform-docs, así que no debería encontrar cambios.
 
 ### 3. Desplegar
 
@@ -153,8 +165,10 @@ Después, entrar por `website_url`:
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
 
-Borra todos los recursos y, cuando el state quedó vacío, también el bucket del state (ver
-[Estado](ARCHITECTURE.md#6-estado)). No queda nada del TP en la cuenta.
+Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
+[Estado](ARCHITECTURE.md#6-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
+el log group que crea Container Insights (`/aws/ecs/containerinsights/ledger-cluster/performance`,
+con retención de un día); ninguno de los dos molesta al próximo Deploy.
 
 ### Desde una máquina local
 
@@ -165,8 +179,8 @@ mismos pasos que el pipeline:
 make init      # crea el bucket del state si no existe e inicializa terraform/organization
 make imagen    # construye apps/ledger y la sube a ECR (si ese tag ya está, no hace nada)
 make plan      # deja el plan en terraform/organization/tfplan, con ese tag
-make apply     # aplica ese plan
-make destroy   # pide confirmación; borra también el bucket del state
+make apply     # crea los buckets del proyecto si no existen y aplica ese plan
+make destroy   # pide confirmación; borra también los buckets
 ```
 
 `make help` lista el resto (`fmt`, `fmt-check`, `validate`, `clean`). Local y pipeline usan el
@@ -221,7 +235,10 @@ Bucket privado del proyecto: el archivo del ledger (`transaction-history/`) y la
 bloqueo de acceso público y una política que rechaza cualquier pedido que no venga por HTTPS. El lifecycle borra las versiones reemplazadas a
 los 30 días y pasa el archivo a STANDARD_IA a los 30 días y a GLACIER al año.
 
-**Recursos:** `aws_s3_bucket.this`, `aws_s3_bucket_versioning.this`,
+El bucket lo crea `make apply` con la AWS CLI y el módulo lo configura (ver
+[Estado](ARCHITECTURE.md#6-estado)).
+
+**Recursos:** `aws_s3_bucket_versioning.this`,
 `aws_s3_bucket_server_side_encryption_configuration.this`,
 `aws_s3_bucket_public_access_block.this`, `aws_s3_bucket_policy.this` y
 `aws_s3_bucket_lifecycle_configuration.this`.
@@ -235,7 +252,9 @@ objeto por archivo con su `Content-Type`, y publica `config.json` con lo que el 
 puede saber hasta el apply (`api_url`, `login_url`, `logout_url`). Se cifra con AES256 y no con
 KMS: los usuarios anónimos del sitio no pueden tener permiso sobre una clave.
 
-**Recursos:** `aws_s3_bucket.this`, `aws_s3_bucket_website_configuration.this`,
+Como el de `storage`, el bucket lo crea `make apply` con la AWS CLI.
+
+**Recursos:** `aws_s3_bucket_website_configuration.this`,
 `aws_s3_bucket_policy.public_read`, `aws_s3_object.site` y `aws_s3_object.config`.
 
 ---
@@ -266,7 +285,7 @@ acceso público. Expone la `DB_URL` de los binarios, con TLS obligatorio.
 
 ### [`modules/load_balancer`](terraform/modules/load_balancer)
 
-NLB público en HTTP:80 con el target group de la API. Los targets son las IP de las tareas, que
+NLB público con un listener TCP:80 y el target group de la API. Los targets son las IP de las tareas, que
 ECS registra solo, y el health check es HTTP a `/health`.
 
 **Recursos:** `aws_lb.this`, `aws_lb_target_group.api` y `aws_lb_listener.http`.
@@ -276,8 +295,8 @@ ECS registra solo, y el health check es HTTP a `/health`.
 ### [`modules/capacity`](terraform/modules/capacity)
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
-SSM, según la arquitectura de la instancia) e IMDSv2 obligatorio, un ASG y el capacity provider
-que lo escala según las tareas.
+SSM, según la arquitectura de la instancia), el disco raíz cifrado e IMDSv2 obligatorio, un ASG y
+el capacity provider que lo escala según las tareas.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.
@@ -373,8 +392,9 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
 ├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
+├── img/                   # diagrama de arquitectura (.png y .drawio)
 ├── scripts/
-│   └── state-bucket.sh    # crea y borra el bucket del state
+│   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
 ├── terraform/
 │   ├── organization/      # composición raíz: acá se corre terraform
 │   └── modules/           # módulos propios

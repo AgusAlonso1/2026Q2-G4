@@ -40,7 +40,7 @@ locals {
       subnet_ids        = module.vpc.private_subnets
       security_group_id = module.security_groups.ids.app
       min_count         = 2
-      max_count         = 6
+      max_count         = 5 # el ASG admite max_count + 1, y AWS Academy no deja más de 6
       cpu_target        = 60
       schedule          = {}
       environment = {
@@ -75,7 +75,8 @@ locals {
     }
   }
 
-  # En un deploy cada servicio llega al doble de max_count (deployment_maximum_percent = 200).
+  # Cota para un deploy: cada servicio como si llegara al doble de max_count
+  # (deployment_maximum_percent = 200), más de lo que admite su ASG.
   db_pool_size = floor(var.db_max_connections / sum([for s in values(local.services) : 2 * s.max_count]))
   db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
 

@@ -40,7 +40,7 @@ tag:
 
 imagen: init
 	@test -z "$$(git status --porcelain -- apps/ledger)" || { echo "apps/ledger tiene cambios sin commitear: la imagen no seria la del tag $(IMAGE_TAG)" >&2; exit 1; }
-	$(TF) -chdir=$(TF_DIR) apply -auto-approve -target=aws_ecr_repository.ledger
+	$(TF) -chdir=$(TF_DIR) apply -auto-approve -compact-warnings -target=aws_ecr_repository.ledger
 	@repo=$$($(TF) -chdir=$(TF_DIR) output -raw ecr_repository_url) && \
 	if aws ecr describe-images --region $(REGION) --repository-name "$${repo#*/}" --image-ids imageTag=$(IMAGE_TAG) >/dev/null 2>&1; then \
 	  echo "La imagen $(IMAGE_TAG) ya esta en ECR"; \

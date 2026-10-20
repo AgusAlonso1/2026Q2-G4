@@ -7,13 +7,14 @@ IMAGE_TAG ?= $(shell git rev-parse --short=12 HEAD:apps/ledger)
 export REGION
 export TF_VAR_image_tag = $(IMAGE_TAG)
 
-.PHONY: help fmt fmt-check init validate tag imagen plan apply destroy clean
+.PHONY: help fmt fmt-check init validate test tag imagen plan apply destroy clean
 
 help:
 	@echo "make fmt        Formatea todo terraform/"
 	@echo "make fmt-check  Verifica el formato sin modificar (lo mismo que corre el pipeline)"
 	@echo "make init       Crea el bucket del state si no existe e inicializa terraform/organization"
 	@echo "make validate   init sin backend + validate (no necesita AWS)"
+	@echo "make test       terraform test con providers mock, en la raíz y en los módulos con tests/ (no necesita AWS)"
 	@echo "make tag        Muestra el tag de la imagen: el hash de apps/ledger en el commit actual"
 	@echo "make imagen     Construye la imagen de apps/ledger y la sube a ECR con ese tag"
 	@echo "make plan       Genera el plan en terraform/organization/tfplan"
@@ -34,6 +35,14 @@ init:
 validate:
 	$(TF) -chdir=$(TF_DIR) init -backend=false
 	$(TF) -chdir=$(TF_DIR) validate
+
+test:
+	$(TF) -chdir=$(TF_DIR) init -backend=false -input=false >/dev/null
+	$(TF) -chdir=$(TF_DIR) test
+	@for m in terraform/modules/*/tests; do \
+	  mod=$${m%/tests}; echo "== $$mod"; \
+	  $(TF) -chdir=$$mod init -backend=false -input=false >/dev/null && $(TF) -chdir=$$mod test || exit 1; \
+	done
 
 tag:
 	@echo $(IMAGE_TAG)

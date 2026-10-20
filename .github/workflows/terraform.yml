@@ -37,6 +37,11 @@ jobs:
       - name: validate
         run: terraform validate
 
+      # Con providers mock: no usa AWS, así que corre también en el PR desde el fork.
+      - name: test
+        working-directory: .
+        run: make test
+
   plan:
     name: plan
     needs: validate

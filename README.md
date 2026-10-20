@@ -54,7 +54,7 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
 | Workflow | Cuándo corre | Qué hace |
 |---|---|---|
-| **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run. En un pull request desde un fork (como el de la entrega) GitHub no pasa los secrets: el plan se saltea con un aviso y el check queda en verde con `validate` |
+| **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false`, `validate` y `terraform test` con providers mock (sin AWS, ver [Pruebas](#pruebas)); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run. En un pull request desde un fork (como el de la entrega) GitHub no pasa los secrets: el plan se saltea con un aviso y el check queda en verde con `validate` y las pruebas |
 | **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
 | **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después el bucket del state |
 
@@ -98,7 +98,7 @@ make apply     # aplica ese plan
 make destroy   # pide confirmación; borra también el bucket del state
 ```
 
-`make help` lista el resto (`fmt`, `fmt-check`, `validate`, `clean`). Local y pipeline usan el
+`make help` lista el resto (`fmt`, `fmt-check`, `validate`, `test`, `clean`). Local y pipeline usan el
 mismo state, así que lo desplegado desde un lado se ve y se destruye desde el otro.
 
 ---
@@ -251,6 +251,23 @@ Para cerrar sesión, el frontend borra los tokens y redirige a `logout_url`. Cog
 `apps/web/`. Los datos para la API (`issuer`, `client_id`) y el `user_pool_id` para crear
 usuarios por CLI están en `terraform output cognito`.
 
+## Pruebas
+
+`make test` (y el job `validate` del workflow **Terraform**) corre `terraform test` con un
+**provider mock**: Terraform recorre el grafo completo y "aplica" cada recurso con atributos
+inventados, sin credenciales ni costo. No prueba AWS, prueba la configuración: dependencias,
+`for_each`, valores sensibles, validaciones de variables y las propiedades del diseño que no
+tienen que romperse con un cambio.
+
+| Archivo | Qué verifica |
+|---|---|
+| `organization/tests/despliegue.tftest.hcl` | El despliegue completo se aplica; dos AZ y los CIDR de cada capa; cada secreto tiene sólo las claves de su servicio, cifradas con la clave del proyecto; ninguna variable secreta quedó en `environment`; el endpoint de Secrets Manager existe; ECR cifra y escanea; la validación de `archive_schedule` rechaza más de una tarea |
+| `modules/service/tests/service.tftest.hcl` | La task definition lleva los secretos como `valueFrom` y `environment` ordenado; la API va detrás del balanceador y escala por CPU; el archivador arranca en 0, sin puertos ni balanceador, y escala por horario en hora de Buenos Aires |
+| `modules/security_groups/tests/security_groups.tftest.hcl` | La única entrada desde un rango de direcciones es la del NLB; ningún grupo abre SSH; a la base sólo entran la API y el archivador, por 5432; el archivador, la base y los hosts de ECS no salen a Internet |
+
+Los mocks sólo fijan los atributos que el provider valida por formato (ARN, id del launch
+template) o que las pruebas comparan; el resto lo genera Terraform.
+
 ## Estado
 
 El state vive en S3, en `ledger-tfstate-<cuenta>-us-east-1-an`, con la key
@@ -285,6 +302,7 @@ todo de nuevo y Destroy no tendría qué destruir.
 │   └── state-bucket.sh    # crea y borra el bucket del state
 ├── terraform/
 │   ├── organization/      # composición raíz: acá se corre terraform
+│   │   └── tests/         # terraform test con providers mock (también en service/ y security_groups/)
 │   └── modules/           # módulos propios
 │       ├── security_groups/
 │       ├── storage/       # bucket privado: archivo del ledger

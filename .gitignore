@@ -14,6 +14,8 @@ override.tf.json
 terraform.rc
 # .terraform.lock.hcl SÍ se commitea: fija las versiones exactas de los providers
 # para que la cátedra y el pipeline usen las mismas que nosotros.
+# Los módulos no: `make test` los inicializa sólo para correr sus pruebas.
+terraform/modules/*/.terraform.lock.hcl
 
 # Variables: sólo el ejemplo va al repo
 *.tfvars

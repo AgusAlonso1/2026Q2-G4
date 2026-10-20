@@ -181,6 +181,15 @@ Un deploy con cambios en el backend sube una imagen nueva y crea una revisión d
 definition. ECS reemplaza las tareas de a una, esperando el health check del NLB, y si las
 nuevas no arrancan vuelve solo a la versión anterior.
 
+**Escaneo de la imagen.** El repositorio de ECR tiene `scan_on_push`: cada imagen que sube
+`make imagen` se compara contra la base de vulnerabilidades conocidas (CVE) y el resultado
+queda en la consola de ECR (`aws ecr describe-image-scan-findings`). Es el escaneo básico,
+sin costo, y alcanza para esta imagen: la base es `distroless/static`, sin shell ni gestor de
+paquetes, así que lo que podría aparecer está en las pocas librerías del sistema. El escaneo
+avanzado (Amazon Inspector) revisa además las dependencias de Go, pero se cobra por imagen.
+No bloquea el deploy: informa, y como los tags son inmutables cada versión queda escaneada
+una sola vez, la vez que se sube.
+
 ## Login con Cognito
 
 Workaround de la cátedra: Cognito sólo acepta callbacks HTTPS y el frontend se sirve por HTTP

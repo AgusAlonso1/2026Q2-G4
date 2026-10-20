@@ -57,9 +57,10 @@ resource "aws_vpc_endpoint" "s3" {
   }
 }
 
-# Sin NAT en las subredes de archive: los hosts de ECS llegan a ECS, ECR y Logs por acá.
+# Sin NAT en las subredes de archive: los hosts de ECS llegan a ECS, ECR, Logs y Secrets
+# Manager (el agente lee los secretos de la tarea antes de arrancarla) por acá.
 resource "aws_vpc_endpoint" "interface" {
-  for_each = toset(["ecs", "ecs-agent", "ecs-telemetry", "ecr.api", "ecr.dkr", "logs"])
+  for_each = toset(["ecs", "ecs-agent", "ecs-telemetry", "ecr.api", "ecr.dkr", "logs", "secretsmanager"])
 
   vpc_id              = module.vpc.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.${each.key}"

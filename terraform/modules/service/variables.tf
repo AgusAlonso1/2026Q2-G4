@@ -34,9 +34,15 @@ variable "memory" {
 }
 
 variable "environment" {
-  description = "Variables de entorno del contenedor. Lleva secretos: es sensible."
+  description = "Variables de entorno del contenedor. Sin secretos: quedan a la vista en la task definition."
   type        = map(string)
-  sensitive   = true
+  default     = {}
+}
+
+variable "secrets" {
+  description = "Variables secretas: nombre → ARN de Secrets Manager (arn:clave-json::version-id). ECS lee el valor al arrancar la tarea, con el rol de ejecución."
+  type        = map(string)
+  default     = {}
 }
 
 variable "port" {

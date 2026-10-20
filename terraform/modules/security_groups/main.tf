@@ -4,8 +4,8 @@ locals {
     app       = "API: entra desde el NLB, sale a la base, a S3 y al proveedor"
     archive   = "Archivador: sin entrada, sale solo a la base y a S3"
     data      = "RDS: entra solo desde la API y el archivador"
-    host      = "Hosts de ECS: sin entrada, salen solo a los endpoints de ECS, ECR y Logs, y a S3"
-    endpoints = "Interface endpoints de ECS, ECR y Logs: entran solo desde los hosts de ECS"
+    host      = "Hosts de ECS: sin entrada, salen solo a los endpoints de ECS, ECR, Logs y Secrets Manager, y a S3"
+    endpoints = "Interface endpoints de ECS, ECR, Logs y Secrets Manager: entran solo desde los hosts de ECS"
   }
 
   rules = {
@@ -24,7 +24,7 @@ locals {
     data_in_app     = { sg = "data", type = "ingress", port = var.db_port, peer = "app", description = "Desde la API" }
     data_in_archive = { sg = "data", type = "ingress", port = var.db_port, peer = "archive", description = "Desde el archivador" }
 
-    host_out_endpoints = { sg = "host", type = "egress", port = 443, peer = "endpoints", description = "Agente de ECS, ECR y CloudWatch Logs por los interface endpoints" }
+    host_out_endpoints = { sg = "host", type = "egress", port = 443, peer = "endpoints", description = "Agente de ECS, ECR, CloudWatch Logs y Secrets Manager por los interface endpoints" }
     host_out_s3        = { sg = "host", type = "egress", port = 443, peer = "s3", description = "Capas de la imagen: ECR las sirve desde S3" }
 
     endpoints_in_host = { sg = "endpoints", type = "ingress", port = 443, peer = "host", description = "Desde los hosts de ECS" }

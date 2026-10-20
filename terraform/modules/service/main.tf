@@ -25,6 +25,7 @@ resource "aws_ecs_task_definition" "this" {
       protocol      = "tcp"
     }]
     environment = [for nombre in sort(keys(var.environment)) : { name = nombre, value = var.environment[nombre] }]
+    secrets     = [for nombre in sort(keys(var.secrets)) : { name = nombre, valueFrom = var.secrets[nombre] }]
     logConfiguration = {
       logDriver = "awslogs"
       options = {

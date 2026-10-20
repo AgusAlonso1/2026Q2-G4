@@ -109,13 +109,13 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 |---|---|---|
 | `terraform-aws-modules/vpc/aws` | externo | VPC, 8 subredes en 4 capas × 2 AZ, IGW, NAT, tablas de ruteo |
 | `security_groups` | propio | Un SG por capa (`nlb`, `app`, `archive`, `data`), más los de los hosts de ECS y los interface endpoints, con reglas que referencian grupos, no rangos |
-| `storage` | propio | TODO |
+| `storage` | propio | Bucket privado del archivo del ledger: versionado, cifrado (SSE-S3) y con transiciones a clases más baratas por prefijo |
 | `website` | propio | Bucket público con website hosting (HTTP), los archivos del frontend y su `config.json` |
 | `auth` | propio | User pool de Cognito con Hosted UI, y API Gateway HTTP + Lambda que hacen de callback HTTPS (ver "Login con Cognito") |
 | `database` | propio | RDS PostgreSQL Multi-AZ en la capa de datos, cifrada, sin acceso público |
 | `load_balancer` | propio | NLB público en HTTP:80 con health check HTTP a `/health` y target group de la API, con las IP de las tareas como targets |
 | `capacity` | propio | Instancias de un servicio de ECS: launch template con la AMI optimizada para ECS, ASG y capacity provider |
-| `service` | propio | Servicio de ECS: task definition, servicio, logs y autoscaling de las tareas por CPU o por horario |
+| `service` | propio | Servicio de ECS: task definition (variables comunes y secretos desde Secrets Manager), servicio, logs y autoscaling de las tareas por CPU o por horario |
 
 ## Funciones
 
@@ -136,6 +136,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `toset` | `modules/auth/main.tf` | Una ruta de API Gateway por elemento (`/callback`, `/logout`) |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
+| `nonsensitive` | `organization/main.tf` | Los nombres de las variables secretas no son secretos: así se pueden recorrer para armar cada `valueFrom` |
 | `coalesce` | `organization/locals.tf` | Usa la clave o la URL que se pasó por variable y, si está vacía, la generada o la propia |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 
@@ -145,7 +146,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 |---|---|---|
 | `for_each` | `organization/main.tf` (`module "capacity"`, `module "service"`) | Instancias y servicio de ECS para la API y el archivador sin duplicar código |
 | `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesita el agente de ECS |
-| `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) |
+| `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) y un secreto de Secrets Manager por servicio |
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
@@ -173,7 +174,7 @@ cada tarea tiene su propia ENI y su security group, y una t3.micro aloja una sol
 
 El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
 subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
-`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`); las capas de la imagen vienen de
+`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`); las capas de la imagen vienen de
 S3 por el gateway endpoint. Las instancias de la API usan los mismos endpoints, así que el
 NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
 
@@ -189,6 +190,35 @@ paquetes, así que lo que podría aparecer está en las pocas librerías del sis
 avanzado (Amazon Inspector) revisa además las dependencias de Go, pero se cobra por imagen.
 No bloquea el deploy: informa, y como los tags son inmutables cada versión queda escaneada
 una sola vez, la vez que se sube.
+
+## Secretos
+
+Las claves que usan los binarios (la `DB_URL` con la password de la base, la de
+admin, la del mock, la del proveedor y la del webhook) no van en la task definition, donde
+cualquiera con acceso a la consola o a `ecs:DescribeTaskDefinition` las vería. Terraform las
+genera (`random_password`) y las guarda en **Secrets Manager**, un secreto por servicio con
+sólo lo que ese servicio usa: `ledger/api` tiene las cinco, `ledger/archive` sólo la `DB_URL`.
+
+La task definition guarda la referencia, no el valor: cada variable es un `valueFrom` con
+`<arn del secreto>:<clave>::<version-id>`. El agente de ECS lee el secreto con el rol de
+ejecución antes de arrancar el contenedor y se lo pasa como variable de entorno, así que el
+código no cambia. El `version-id` hace que un valor nuevo genere una revisión nueva de la task
+definition, y ECS reemplaza las tareas; sin él seguirían corriendo con el valor viejo. El
+agente llega a Secrets Manager por su interface endpoint, porque las subredes de `archive` no
+salen a Internet.
+
+Los secretos se crean con `recovery_window_in_days = 0`: Secrets Manager reserva por defecto
+el nombre 30 días después de borrarlo, y el siguiente Deploy fallaría por nombre duplicado.
+
+**Cifrado.** Secrets Manager cifra siempre con KMS; sin una clave indicada usa la que AWS
+administra para el servicio (`aws/secretsmanager`). Lo que cambia frente a la task definition
+no es que el valor esté cifrado en reposo sino quién lo puede leer: hace falta permiso de IAM
+sobre el secreto (`secretsmanager:GetSecretValue`), cada lectura queda en CloudTrail y el
+valor no aparece en la consola de ECS ni en `DescribeTaskDefinition`.
+
+**Lo que queda.** Los valores siguen en el state de Terraform, porque los genera Terraform; el
+state está en un bucket privado y cifrado. El client secret de Cognito sigue en una variable
+de entorno de la Lambda del callback, cifrada en reposo por Lambda.
 
 ## Login con Cognito
 

@@ -86,14 +86,20 @@ module "service" {
   command                = each.value.command
   cpu                    = each.value.cpu
   memory                 = each.value.memory
-  environment            = local.environments[each.key]
-  port                   = each.value.port
-  target_group_arn       = each.value.target_group_arn
-  subnet_ids             = each.value.subnet_ids
-  security_group_id      = each.value.security_group_id
-  role_arn               = data.aws_iam_role.lab.arn
-  min_count              = each.value.min_count
-  max_count              = each.value.max_count
-  cpu_target             = each.value.cpu_target
-  schedule               = each.value.schedule
+  environment            = each.value.environment
+  # Cada clave del secreto como variable. Con el version_id, si cambia un valor cambia la task
+  # definition y ECS reemplaza las tareas: sin él seguirían con el valor viejo.
+  secrets = {
+    for nombre in nonsensitive(keys(local.secret_values[each.key])) :
+    nombre => "${aws_secretsmanager_secret.this[each.key].arn}:${nombre}::${aws_secretsmanager_secret_version.this[each.key].version_id}"
+  }
+  port              = each.value.port
+  target_group_arn  = each.value.target_group_arn
+  subnet_ids        = each.value.subnet_ids
+  security_group_id = each.value.security_group_id
+  role_arn          = data.aws_iam_role.lab.arn
+  min_count         = each.value.min_count
+  max_count         = each.value.max_count
+  cpu_target        = each.value.cpu_target
+  schedule          = each.value.schedule
 }

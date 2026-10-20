@@ -48,3 +48,13 @@ output "cognito" {
     issuer       = module.auth.issuer
   }
 }
+
+output "ecr_repository_url" {
+  description = "Repositorio de la imagen del backend. make imagen sube ahí el commit actual."
+  value       = aws_ecr_repository.ledger.repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "Cluster de ECS de la API y el archivador."
+  value       = aws_ecs_cluster.this.name
+}

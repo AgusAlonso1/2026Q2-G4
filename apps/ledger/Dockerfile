@@ -15,4 +15,4 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/api /out/archivador /
 USER nonroot:nonroot
 EXPOSE 8080
-ENTRYPOINT ["/api"]
+CMD ["/api"]

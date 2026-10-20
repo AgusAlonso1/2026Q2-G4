@@ -30,7 +30,7 @@ defaults:
 
 jobs:
   deploy:
-    name: plan + apply
+    name: imagen + plan + apply
     runs-on: ubuntu-latest
     if: inputs.confirm == 'deploy'
     steps:
@@ -49,7 +49,10 @@ jobs:
           fi
           aws sts get-caller-identity --query Arn --output text
 
-      - name: init + plan
+      - name: imagen
+        run: make imagen
+
+      - name: plan
         run: make plan
 
       - name: apply

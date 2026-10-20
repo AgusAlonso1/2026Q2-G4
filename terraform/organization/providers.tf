@@ -15,17 +15,11 @@ data "aws_iam_instance_profile" "lab" {
   name = var.instance_profile_name
 }
 
-# Mismo motivo: la Lambda del callback de Cognito corre con el rol del laboratorio.
+# Mismo motivo: la Lambda del callback de Cognito y las tareas de ECS corren con el rol del laboratorio.
 data "aws_iam_role" "lab" {
-  name = var.lambda_role_name
+  name = var.lab_role_name
 }
 
-data "aws_ami" "al2023" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
-  }
+data "aws_ssm_parameter" "ecs_ami" {
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
 }

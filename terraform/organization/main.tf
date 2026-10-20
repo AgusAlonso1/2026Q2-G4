@@ -42,7 +42,7 @@ module "database" {
   name_prefix          = local.name_prefix
   db_subnet_group_name = module.vpc.database_subnet_group_name
   security_group_id    = module.security_groups.ids.data
-  password             = random_password.db.result
+  password             = random_password.this["db"].result
   port                 = var.db_port
   engine_version       = var.db_engine_version
   instance_class       = var.db_instance_class
@@ -60,22 +60,40 @@ module "load_balancer" {
   health_check_path = "/health"
 }
 
+module "capacity" {
+  source   = "../modules/capacity"
+  for_each = local.services
+
+  name                 = "${local.name_prefix}-${each.key}"
+  cluster_name         = aws_ecs_cluster.this.name
+  subnet_ids           = each.value.subnet_ids
+  ami_id               = data.aws_ssm_parameter.ecs_ami.insecure_value
+  instance_type        = var.instance_type
+  instance_profile_arn = data.aws_iam_instance_profile.lab.arn
+  security_group_id    = module.security_groups.ids.host
+  max_size             = each.value.max_count + 1
+}
+
 module "service" {
   source   = "../modules/service"
   for_each = local.services
 
-  name                 = "${local.name_prefix}-${each.key}"
-  subnet_ids           = each.value.subnet_ids
-  ami_id               = data.aws_ami.al2023.id
-  instance_type        = var.instance_type
-  instance_profile_arn = data.aws_iam_instance_profile.lab.arn
-  min_size             = each.value.min_size
-  desired_capacity     = each.value.desired_capacity
-  max_size             = each.value.max_size
-  # TODO: definir la capa de compute (EC2, ECS/Fargate, Lambda o EKS). Si queda EC2, falta:
-  #       user_data =templatefile("${path.module}/templates/user_data.sh.tftpl", {...}),
-  #       security_group_ids (api → ids.app, archive → ids.archive),
-  #       target_group_arns (api → module.load_balancer.target_group_arn), health_check_type,
-  #       COGNITO_ISSUER y COGNITO_CLIENT_ID en el env de la API (module.auth.issuer / client_id),
-  #       política de escalado (api) y acciones programadas (archive)
+  name = "${local.name_prefix}-${each.key}"
+  # De la asociación y no del cluster: el servicio necesita su capacity provider ya asociado.
+  cluster_name           = aws_ecs_cluster_capacity_providers.this.cluster_name
+  capacity_provider_name = module.capacity[each.key].capacity_provider_name
+  image                  = "${aws_ecr_repository.ledger.repository_url}:${var.image_tag}"
+  command                = each.value.command
+  cpu                    = each.value.cpu
+  memory                 = each.value.memory
+  environment            = local.environments[each.key]
+  port                   = each.value.port
+  target_group_arn       = each.value.target_group_arn
+  subnet_ids             = each.value.subnet_ids
+  security_group_id      = each.value.security_group_id
+  role_arn               = data.aws_iam_role.lab.arn
+  min_count              = each.value.min_count
+  max_count              = each.value.max_count
+  cpu_target             = each.value.cpu_target
+  schedule               = each.value.schedule
 }

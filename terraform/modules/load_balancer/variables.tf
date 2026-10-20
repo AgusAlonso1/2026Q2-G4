@@ -19,11 +19,11 @@ variable "security_group_id" {
 }
 
 variable "app_port" {
-  description = "Puerto de la API en las instancias: destino del tráfico y del health check."
+  description = "Puerto de la API en las tareas: destino del tráfico y del health check."
   type        = number
 }
 
 variable "health_check_path" {
-  description = "Path HTTP que el NLB consulta en cada instancia."
+  description = "Path HTTP que el NLB consulta en cada tarea."
   type        = string
 }

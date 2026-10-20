@@ -57,3 +57,18 @@ resource "aws_vpc_endpoint" "s3" {
   }
 }
 
+# Sin NAT en las subredes de archive: los hosts de ECS llegan a ECS, ECR y Logs por acá.
+resource "aws_vpc_endpoint" "interface" {
+  for_each = toset(["ecs", "ecs-agent", "ecs-telemetry", "ecr.api", "ecr.dkr", "logs"])
+
+  vpc_id              = module.vpc.vpc_id
+  service_name        = "com.amazonaws.${var.aws_region}.${each.key}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = module.vpc.intra_subnets
+  security_group_ids  = [module.security_groups.ids.endpoints]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${local.name_prefix}-vpce-${replace(each.key, ".", "-")}"
+  }
+}

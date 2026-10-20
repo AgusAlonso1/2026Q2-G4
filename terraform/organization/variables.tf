@@ -17,7 +17,7 @@ variable "vpc_cidr" {
 }
 
 variable "app_port" {
-  description = "Puerto donde escucha la API. Lo usan el SG, el target group y el user_data."
+  description = "Puerto donde escucha la API. Lo usan el SG, el target group y la task definition."
   type        = number
   default     = 8080
 }
@@ -34,14 +34,14 @@ variable "instance_profile_name" {
   default     = "LabInstanceProfile"
 }
 
-variable "lambda_role_name" {
-  description = "Rol preexistente del laboratorio con el que corre la Lambda del callback de Cognito."
+variable "lab_role_name" {
+  description = "Rol preexistente del laboratorio. Lo usan la Lambda del callback de Cognito y las tareas de ECS (rol de ejecución y de la tarea)."
   type        = string
   default     = "LabRole"
 }
 
 variable "instance_type" {
-  description = "Tipo de instancia de los dos ASG."
+  description = "Tipo de instancia de los hosts de ECS. Con red awsvpc, una t3.micro aloja una sola tarea."
   type        = string
   default     = "t3.micro"
 }
@@ -64,7 +64,58 @@ variable "db_multi_az" {
   default     = true
 }
 
-# TODO: variables del resto de la arquitectura a medida que se llenan los módulos, por ejemplo
-#   - mock_api_key / webhook_secret (los secretos que SÍ se comparten con el otro equipo)
-#   - proveedor_url / webhook_url
-#   - archive_schedule (cron de apertura y cierre de la ventana de archivado)
+variable "image_tag" {
+  description = "Tag de la imagen del backend en ECR. make imagen la sube con el commit actual y make plan lo pasa solo."
+  type        = string
+  default     = "sin-imagen"
+}
+
+variable "mock_api_key" {
+  description = "Clave del proveedor simulado (/servicio-mock). Vacía: se genera una. Se comparte con el equipo que use este despliegue como proveedor."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "proveedor_url" {
+  description = "URL del proveedor externo. Vacía: la API usa su propio /servicio-mock detrás del NLB."
+  type        = string
+  default     = ""
+}
+
+variable "proveedor_api_key" {
+  description = "Clave del proveedor externo. Vacía: la del mock propio."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "webhook_url" {
+  description = "Adonde la API avisa las órdenes terminadas. Vacía: no avisa."
+  type        = string
+  default     = ""
+}
+
+variable "webhook_secret" {
+  description = "Secreto con el que se firman los avisos. Vacío: se genera uno. Tiene que coincidir con el del que recibe."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "archive_schedule" {
+  description = "Ventana del archivador: una acción abre (1 tarea) y otra cierra (0). Cron de Application Auto Scaling, hora de Buenos Aires."
+  type = map(object({
+    schedule = string
+    tasks    = number
+  }))
+  default = {
+    abrir  = { schedule = "cron(25 19 * * ? *)", tasks = 1 }
+    cerrar = { schedule = "cron(30 21 * * ? *)", tasks = 0 }
+  }
+
+  validation {
+    condition     = alltrue([for a in values(var.archive_schedule) : contains([0, 1], a.tasks)])
+    error_message = "El archivador va de 0 a 1 tarea: tasks tiene que ser 0 o 1."
+  }
+}

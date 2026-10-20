@@ -68,6 +68,10 @@ jobs:
         working-directory: .
         run: make init
 
+      - name: tag de la imagen
+        working-directory: .
+        run: echo "TF_VAR_image_tag=$(make -s tag)" >> "$GITHUB_ENV"
+
       - name: plan
         run: |
           terraform plan -no-color -lock=false -out=tfplan | tee plan.txt

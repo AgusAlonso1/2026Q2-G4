@@ -19,6 +19,7 @@ en la cuenta de AWS cuyos secrets tenga el repositorio, y **Destroy** lo borra t
 |---|---|
 | Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
 | AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`), sólo para correr desde una máquina local |
+| Docker | Sólo para correr desde una máquina local: `make imagen` construye la imagen del backend |
 | Cuenta | AWS Academy: usa `LabRole` y `LabInstanceProfile`, que ya existen en el laboratorio |
 
 Para desplegar desde GitHub Actions no hace falta nada instalado localmente: alcanza con los
@@ -54,7 +55,7 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 | Workflow | Cuándo corre | Qué hace |
 |---|---|---|
 | **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
-| **Deploy** | A mano, escribiendo `deploy` | `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
+| **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
 | **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después el bucket del state |
 
 Deploy y Destroy comparten un grupo de `concurrency`: nunca corren a la vez sobre el mismo state.
@@ -91,7 +92,8 @@ mismos pasos que el pipeline:
 
 ```bash
 make init      # crea el bucket del state si no existe e inicializa terraform/organization
-make plan      # deja el plan en terraform/organization/tfplan
+make imagen    # construye apps/ledger y la sube a ECR (si ese tag ya está, no hace nada)
+make plan      # deja el plan en terraform/organization/tfplan, con ese tag
 make apply     # aplica ese plan
 make destroy   # pide confirmación; borra también el bucket del state
 ```
@@ -106,13 +108,14 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | Módulo | Tipo | Qué crea |
 |---|---|---|
 | `terraform-aws-modules/vpc/aws` | externo | VPC, 8 subredes en 4 capas × 2 AZ, IGW, NAT, tablas de ruteo |
-| `security_groups` | propio | Un SG por capa (`nlb`, `app`, `archive`, `data`) con reglas que referencian grupos, no rangos |
+| `security_groups` | propio | Un SG por capa (`nlb`, `app`, `archive`, `data`), más los de los hosts de ECS y los interface endpoints, con reglas que referencian grupos, no rangos |
 | `storage` | propio | TODO |
 | `website` | propio | Bucket público con website hosting (HTTP), los archivos del frontend y su `config.json` |
 | `auth` | propio | User pool de Cognito con Hosted UI, y API Gateway HTTP + Lambda que hacen de callback HTTPS (ver "Login con Cognito") |
 | `database` | propio | RDS PostgreSQL Multi-AZ en la capa de datos, cifrada, sin acceso público |
-| `load_balancer` | propio | NLB público en HTTP:80 con health check HTTP a `/health` y target group de la API |
-| `service` | propio | TODO |
+| `load_balancer` | propio | NLB público en HTTP:80 con health check HTTP a `/health` y target group de la API, con las IP de las tareas como targets |
+| `capacity` | propio | Instancias de un servicio de ECS: launch template con la AMI optimizada para ECS, ASG y capacity provider |
+| `service` | propio | Servicio de ECS: task definition, servicio, logs y autoscaling de las tareas por CPU o por horario |
 
 ## Funciones
 
@@ -131,18 +134,52 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 | `jsonencode` | `modules/website/main.tf` | Arma la política de lectura pública |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `toset` | `modules/auth/main.tf` | Una ruta de API Gateway por elemento (`/callback`, `/logout`) |
-| TODO: `templatefile`, ... | | |
+| `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
+| `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
+| `coalesce` | `organization/locals.tf` | Usa la clave o la URL que se pasó por variable y, si está vacía, la generada o la propia |
+| `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 
 ## Meta-argumentos
 
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
-| `for_each` | `organization/main.tf` (`module "service"`) | Un ASG por servicio sin duplicar código |
+| `for_each` | `organization/main.tf` (`module "capacity"`, `module "service"`) | Instancias y servicio de ECS para la API y el archivador sin duplicar código |
+| `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesita el agente de ECS |
+| `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) |
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
+| `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
-| TODO: `lifecycle` | | |
+| `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
+| `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
+
+## Cómputo
+
+La API y el archivador corren en **ECS con launch type EC2**, desde la misma imagen (cada
+servicio elige `/api` o `/archivador`). Cada servicio tiene su propio ASG, en sus propias
+subredes:
+
+| | API | Archivador |
+|---|---|---|
+| Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet |
+| Tareas | 2 a 6, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
+| Instancias | Las que hagan falta para esas tareas | 0 fuera de la ventana |
+| Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 |
+
+Hay **dos niveles de escalado**: el servicio decide cuántas tareas quiere (por CPU o por
+horario) y el capacity provider agrega o apaga instancias para alojarlas. Con red `awsvpc`
+cada tarea tiene su propia ENI y su security group, y una t3.micro aloja una sola tarea.
+
+El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
+subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
+`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`); las capas de la imagen vienen de
+S3 por el gateway endpoint. Las instancias de la API usan los mismos endpoints, así que el
+NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
+
+Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
+definition. ECS reemplaza las tareas de a una, esperando el health check del NLB, y si las
+nuevas no arrancan vuelve solo a la versión anterior.
 
 ## Login con Cognito
 
@@ -196,7 +233,7 @@ todo de nuevo y Destroy no tendría qué destruir.
 ```
 .
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
-├── Makefile               # init (con el bucket del state), plan, apply, destroy, fmt, validate
+├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
 ├── scripts/
 │   └── state-bucket.sh    # crea y borra el bucket del state
 ├── terraform/
@@ -208,7 +245,8 @@ todo de nuevo y Destroy no tendría qué destruir.
 │       ├── database/
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
-│       └── service/       # launch template + ASG, usado para API y archivador
+│       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
+│       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/
     ├── ledger/            # backend en Go: binarios api y archivador, imagen con su Dockerfile
     ├── web/               # frontend estático (lo sube modules/website)

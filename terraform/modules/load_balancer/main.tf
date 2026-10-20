@@ -15,7 +15,7 @@ resource "aws_lb" "this" {
 
 resource "aws_lb_target_group" "api" {
   name        = "${var.name_prefix}-tg-api"
-  target_type = "instance"
+  target_type = "ip"
   protocol    = "TCP"
   port        = var.app_port
   vpc_id      = var.vpc_id

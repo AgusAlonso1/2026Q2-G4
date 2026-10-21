@@ -163,19 +163,31 @@ Después, entrar por `website_url`:
    aws cognito-idp admin-confirm-sign-up --user-pool-id <user_pool_id> --username <email>
    ```
 
-2. La primera vez pide un alias y crea la cuenta, con $ 50.000 de saldo inicial para la demo.
-3. La billetera: **Inicio**, **Enviar** (a otra cuenta), **Ingresar** (*Ya hice la
-   transferencia* simula el depósito del banco), **Retirar** (egreso por el proveedor) y
-   **Actividad**, con el resumen de cada mes: el de un mes archivado lo arma la API desde S3.
+2. La primera vez pide un alias y crea la cuenta. Arranca con $ 50.000 de saldo de bienvenida,
+   que fija la API (`SALDO_BIENVENIDA_CENTAVOS`) y se asienta contra la cuenta interna de
+   ajustes: el cliente no puede elegir con cuánto abre su cuenta.
+3. La billetera:
+   - **Inicio**: saldo (se puede ocultar), alias para compartir y movimientos recientes.
+   - **Enviar**: elegir a quién (con buscador), el monto (valida contra el saldo) y confirmar.
+   - **Ingresar**: el monto y un código para usar como concepto de la transferencia; *Ya hice
+     la transferencia* simula el aviso del banco.
+   - **Retirar**: CBU o CVU de 22 dígitos, el monto y confirmar. Sale por el proveedor: un
+     monto terminado en 13 centavos lo rechaza y uno terminado en 99 queda *en revisión* hasta
+     que la API lo resuelve por consulta.
+   - **Actividad**: mes por mes, con lo que entró, lo que salió y un filtro; el resumen de un
+     mes archivado lo arma la API desde S3.
+   - Cada operación tiene su comprobante, con el número de operación y su estado.
 
    ![Inicio de la billetera: saldo y últimos movimientos](img/inicio.png)
 
    ![Actividad: movimientos y resumen del mes](img/actividad.png)
 
-4. **Operación** muestra la salud y qué tarea atendió, el proveedor activo, el cierre contable,
-   el archivado, el extracto y la exportación, y la cinta de llamadas a la API con su código y
-   su latencia. Las tarjetas de `/admin/*` y del mock piden las claves (menú de la cuenta →
-   *Claves de operación*), que están en el secreto `ledger/api` de Secrets Manager:
+4. **Operación** (salud y qué tarea atendió, proveedor activo, cierre contable, archivado,
+   extracto y exportación, y la cinta de llamadas a la API con su código y su latencia) no la
+   ve un usuario común: aparece al activar el *Modo operación* desde el menú de la cuenta, con
+   la clave de administración (y la del mock para sus tarjetas). Las claves quedan sólo en esa
+   pestaña del navegador (`sessionStorage`) y se borran al cerrar sesión. Están en el secreto
+   `ledger/api` de Secrets Manager:
 
    ```bash
    aws secretsmanager get-secret-value --secret-id ledger/api --query SecretString --output text \

@@ -88,18 +88,57 @@ En la captura, el recuadro sólido marca los obligatorios y el punteado dos de l
 Los tres salen de **AWS Details → AWS CLI** en el laboratorio y vencen con la sesión: hay que
 volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
-**Opcional: conectar un proveedor o un webhook externos.** Sin nada de esto el despliegue usa
-el proveedor simulado de la propia API y no avisa a nadie. Para conectarlo con otro sistema (por
-ejemplo, el despliegue de otro equipo), en la misma pantalla se cargan estos valores, que Deploy
-y el plan del workflow Terraform le pasan a Terraform como `TF_VAR_*`:
+#### Opcional: conectar el despliegue con el de otro equipo
 
-| Nombre | Pestaña | Variable de Terraform | Vacío |
+Sin nada de esto, el despliegue funciona solo: los ingresos y egresos van al proveedor simulado
+que trae la propia API (`/servicio-mock`) y no se avisa a nadie cuando termina una orden. Hay
+dos conexiones posibles con otro despliegue, independientes entre sí:
+
+- **Proveedor.** Un equipo manda sus ingresos y egresos al `/servicio-mock` del otro, en vez de
+  al suyo. El que hace de proveedor no cambia nada de su lado; sólo comparte su clave del mock.
+- **Webhook.** Cada vez que una orden termina, la API le manda un aviso firmado (cabecera
+  `X-Ledger-Signature`) a `<api_url del otro>/webhooks/recibidos`. El que recibe verifica la
+  firma con el mismo secreto, y el aviso aparece en su pestaña *Operación*.
+
+Los valores se cargan en la misma pantalla que los de AWS. Los workflows Deploy y Terraform se
+los pasan a Terraform como `TF_VAR_*`:
+
+| Nombre | Pestaña | Para qué | Si queda vacío |
 |---|---|---|---|
-| `PROVEEDOR_URL` | Variables | `proveedor_url` | La API usa su propio `/servicio-mock` |
-| `PROVEEDOR_API_KEY` | Secrets | `proveedor_api_key` | La clave del mock propio |
-| `MOCK_API_KEY` | Secrets | `mock_api_key` | Se genera una. Fijarla sirve si otro equipo usa este despliegue como proveedor |
-| `WEBHOOK_URL` | Variables | `webhook_url` | La API no avisa las órdenes terminadas |
-| `WEBHOOK_SECRET` | Secrets | `webhook_secret` | Se genera uno. Tiene que coincidir con el del que recibe los avisos |
+| `MOCK_API_KEY` | Secrets | La clave que exige **mi** `/servicio-mock`. Si otro equipo me usa de proveedor, se la paso | Se genera una, distinta en cada despliegue desde cero |
+| `PROVEEDOR_URL` | Variables | Adónde mando **mis** ingresos y egresos: `<api_url del otro>/servicio-mock` | Mi propio `/servicio-mock` |
+| `PROVEEDOR_API_KEY` | Secrets | La clave del proveedor al que llamo: el `MOCK_API_KEY` del otro | La de mi propio mock |
+| `WEBHOOK_URL` | Variables | Adónde aviso **mis** órdenes terminadas: `<api_url del otro>/webhooks/recibidos` | No aviso a nadie |
+| `WEBHOOK_SECRET` | Secrets | Con qué firmo los avisos que mando y verifico los que recibo. Tiene que ser igual en los dos despliegues | Se genera uno |
+
+Por ejemplo, si el equipo B usa al equipo A de proveedor y los dos se avisan las órdenes:
+
+| | Equipo A (proveedor) | Equipo B |
+|---|---|---|
+| `MOCK_API_KEY` | `clave-a` (inventada y pasada a B) | vacío |
+| `PROVEEDOR_URL` | vacío | `<api_url de A>/servicio-mock` |
+| `PROVEEDOR_API_KEY` | vacío | `clave-a` |
+| `WEBHOOK_URL` | `<api_url de B>/webhooks/recibidos` | `<api_url de A>/webhooks/recibidos` |
+| `WEBHOOK_SECRET` | `secreto-ab` | `secreto-ab` |
+
+La `api_url` de cada uno (`http://<DNS del NLB>`) recién existe después del primer Deploy, así
+que el orden es:
+
+1. Acordar antes `MOCK_API_KEY` y `WEBHOOK_SECRET` (por ejemplo, con `openssl rand -hex 32`) y
+   cargarlos en los dos repositorios. Fijarlos evita que cambien al destruir y volver a
+   desplegar.
+2. Los dos corren **Deploy** sin URL y se pasan la `api_url` que queda en el resumen del run.
+3. Cada uno carga `PROVEEDOR_URL` y/o `WEBHOOK_URL` con la `api_url` del otro y vuelve a correr
+   **Deploy**. Este segundo Deploy actualiza el servicio de ECS, pero no el NLB, así que la
+   `api_url` no cambia.
+
+Para el proveedor, el segundo Deploy se puede evitar: la tarjeta de proveedor de *Operación*
+(o `POST /admin/proveedor`) cambia la URL en caliente, y el cambio queda guardado en la base
+hasta *Volver al de siempre*. La clave no se cambia ahí: sale siempre de `PROVEEDOR_API_KEY`.
+
+Para comprobar que las claves coinciden sin mostrarlas, `GET /admin/diagnostico` (la tarjeta de
+diagnóstico de *Operación*) muestra una huella de cada una: la de `mock_api_key` de A tiene que
+ser igual a la de `proveedor_api_key` de B, y la de `webhook_secret`, igual en los dos.
 
 Desde una máquina local, los mismos valores van en `terraform/organization/terraform.tfvars`
 o como variables de entorno `TF_VAR_*` antes de `make plan`.

@@ -36,26 +36,32 @@ export const handler = async (event) => {
     return back({ error: "token_exchange_failed", state });
   }
 
-  const res = await fetch(`${COGNITO_DOMAIN_URL}/oauth2/token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${secret}`).toString("base64")}`,
-    },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: CLIENT_ID,
-      code: params.code,
-      redirect_uri: CALLBACK_URL,
-    }),
-    signal: AbortSignal.timeout(5000),
-  });
+  // Un timeout o un corte de red también vuelven al frontend con el error, no en un 500 de API Gateway.
+  let tokens;
+  try {
+    const res = await fetch(`${COGNITO_DOMAIN_URL}/oauth2/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${secret}`).toString("base64")}`,
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: CLIENT_ID,
+        code: params.code,
+        redirect_uri: CALLBACK_URL,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    tokens = res.ok ? await res.json() : null;
+  } catch {
+    tokens = null;
+  }
 
-  if (!res.ok) {
+  if (!tokens?.access_token) {
     return back({ error: "token_exchange_failed", state });
   }
 
-  const tokens = await res.json();
   return back({
     access_token: tokens.access_token,
     id_token: tokens.id_token,
@@ -65,7 +71,10 @@ export const handler = async (event) => {
   });
 };
 
-const back = (fragment) => redirect(`${FRONTEND_URL}/#${new URLSearchParams(fragment)}`);
+// Sin los campos que no vinieron: URLSearchParams escribiría "undefined" como valor.
+const back = (fragment) => redirect(`${FRONTEND_URL}/#${new URLSearchParams(
+  Object.entries(fragment).filter(([, valor]) => valor !== undefined && valor !== null),
+)}`);
 
 const redirect = (location) => ({
   statusCode: 302,

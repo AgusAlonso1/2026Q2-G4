@@ -47,10 +47,12 @@ cuenta de AWS Academy y los secrets del paso 1. El laboratorio ya trae `LabRole`
 
 | Herramienta | Versión / nota |
 |---|---|
-| Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
+| Terraform | `>= 1.10, < 2.0` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
 | AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`) |
 | Docker con `buildx` | `make imagen` construye la imagen del backend para amd64 y arm64 |
-| `make`, `git` y `jq` | El `Makefile`, el tag de la imagen (hash de `apps/ledger`) y el borrado de los buckets |
+| Git | Calcula el tag de la imagen del backend (el hash de `apps/ledger`) |
+| Make | Ejecuta los comandos del Makefile |
+| jq | Lo usa el script que borra los buckets, y sirve para consultar los secretos |
 
 ---
 
@@ -155,6 +157,11 @@ la base:
 ```bash
 curl <api_url>/health
 ```
+
+El endpoint devuelve HTTP 200 incluso si la base no responde.
+Para comprobar la conexión a PostgreSQL, verificar que el campo
+`base` del JSON sea `"ok"`; si falla, devuelve `"sin_respuesta"`
+y `estado` pasa a `"degradado"`.
 
 Después, entrar por `website_url`:
 
@@ -383,9 +390,10 @@ tareas, que ECS registra solo, y el health check es HTTP a `/health`.
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
 SSM, según la arquitectura de la instancia), el disco raíz cifrado e IMDSv2 obligatorio, un ASG
-y el capacity provider que lo escala según las tareas. El de la API apunta a tener ocupado el
-80 % de las instancias (`target_capacity`), así que una tarea nueva arranca sin esperar a que se
-lance otra.
+y el capacity provider que lo escala según las tareas. Para la API se configura
+`target_capacity = 80`, con el objetivo de mantener capacidad de reserva y reducir
+la espera al iniciar nuevas tareas. Esto no garantiza un arranque inmediato:
+puede ser necesario lanzar nuevas instancias.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.
@@ -435,7 +443,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `length` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
-| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia es Graviton |
+| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia admite esa arquitectura |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
@@ -461,12 +469,20 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
 
-Además de los meta-argumentos:
+### Validación de variables
 
-| Construcción | Dónde | Para qué |
-|---|---|---|
-| Bloques `dynamic` | `modules/storage/main.tf`, `modules/service/main.tf` | Una regla de lifecycle por prefijo con sus transiciones, y el bloque `load_balancer` del servicio sólo si tiene target group (la API sí, el archivador no) |
-| Bloques `validation` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf`, `modules/capacity/variables.tf` | `archive_schedule` sólo acepta 0 o 1 tarea, `log_retention_days` sólo los valores de CloudWatch y `target_capacity` de 1 a 100: un error falla en el `plan`, no en el apply |
+Los bloques `validation` comprueban los valores de entrada: limitan `archive_schedule` a 0 o 1
+tarea, `log_retention_days` a los valores que admite CloudWatch y `target_capacity` al rango de
+1 a 100. Están en `organization/variables.tf`, `modules/auth/variables.tf`,
+`modules/service/variables.tf` y `modules/capacity/variables.tf`, y un valor inválido falla en
+el `plan`, no a mitad del apply.
+
+### Bloques `dynamic`
+
+| Dónde | Para qué |
+|---|---|
+| `modules/storage/main.tf` | Una regla de lifecycle por prefijo, con sus transiciones |
+| `modules/service/main.tf` | El bloque `load_balancer` del servicio sólo si tiene target group (la API sí, el archivador no) |
 
 ### Data sources
 

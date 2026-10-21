@@ -116,9 +116,10 @@ cada tarea tiene su propia ENI y su security group, y la instancia se queda una 
 `c7g.large` (3 ENIs) aloja dos tareas y una `t3.micro` (2 ENIs), una sola.
 
 El capacity provider de la API apunta a tener ocupado el 80 % de las instancias
-(`target_capacity`), así que siempre queda lugar libre: una tarea nueva, por scale-out o por
-deploy, arranca sin esperar a que se lance una instancia, y el capacity provider lanza la
-siguiente en segundo plano. El del archivador queda en 100 %: no tiene picos, y fuera de su
+(`target_capacity`), para dejar lugar de reserva: la primera tarea nueva de un scale-out o de un
+deploy suele encontrar dónde arrancar sin esperar, y el capacity provider lanza la siguiente
+instancia en segundo plano. No es una garantía: si llegan más tareas de las que entran en esa
+reserva, las que sobran esperan a que la instancia nueva se registre en el cluster. El del archivador queda en 100 %: no tiene picos, y fuera de su
 ventana baja a cero instancias.
 
 **Por qué EC2 y no Fargate.** La API es una carga base constante: un PSP no baja a cero y

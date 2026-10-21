@@ -40,8 +40,14 @@ variable "lab_role_name" {
   default     = "LabRole"
 }
 
-variable "instance_type" {
-  description = "Tipo de instancia de los hosts de ECS. Con red awsvpc, una t3.micro aloja una sola tarea."
+variable "api_instance_type" {
+  description = "Tipo de instancia de los hosts de la API."
+  type        = string
+  default     = "c7g.large"
+}
+
+variable "archive_instance_type" {
+  description = "Tipo de instancia del host del archivador."
   type        = string
   default     = "t3.micro"
 }

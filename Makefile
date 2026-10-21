@@ -3,6 +3,7 @@ TF     ?= terraform
 REGION ?= us-east-1
 # Hash del árbol de apps/ledger: cambia sólo si cambia el backend, no con cada commit.
 IMAGE_TAG ?= $(shell git rev-parse --short=12 HEAD:apps/ledger)
+PLATFORMS ?= linux/amd64,linux/arm64
 
 export REGION
 export TF_VAR_image_tag = $(IMAGE_TAG)
@@ -15,7 +16,7 @@ help:
 	@echo "make init       Crea el bucket del state si no existe e inicializa terraform/organization"
 	@echo "make validate   init sin backend + validate (no necesita AWS)"
 	@echo "make tag        Muestra el tag de la imagen: el hash de apps/ledger en el commit actual"
-	@echo "make imagen     Construye la imagen de apps/ledger y la sube a ECR con ese tag"
+	@echo "make imagen     Construye la imagen de apps/ledger (amd64 y arm64) y la sube a ECR con ese tag"
 	@echo "make plan       Genera el plan en terraform/organization/tfplan"
 	@echo "make apply      Crea los buckets del proyecto si no existen y aplica el plan guardado"
 	@echo "make destroy    Destruye toda la infraestructura y después los buckets (proyecto y state)"
@@ -46,8 +47,9 @@ imagen: init
 	  echo "La imagen $(IMAGE_TAG) ya esta en ECR"; \
 	else \
 	  aws ecr get-login-password --region $(REGION) | docker login --username AWS --password-stdin "$${repo%%/*}" && \
-	  docker build --platform linux/amd64 --build-arg VERSION=$(IMAGE_TAG) -t "$$repo:$(IMAGE_TAG)" apps/ledger && \
-	  docker push "$$repo:$(IMAGE_TAG)"; \
+	  { docker buildx inspect ledger >/dev/null 2>&1 || docker buildx create --name ledger --driver docker-container >/dev/null; } && \
+	  docker buildx build --builder ledger --platform $(PLATFORMS) --provenance=false \
+	    --build-arg VERSION=$(IMAGE_TAG) -t "$$repo:$(IMAGE_TAG)" --push apps/ledger; \
 	fi
 
 plan: init

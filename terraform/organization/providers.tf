@@ -21,7 +21,3 @@ data "aws_iam_instance_profile" "lab" {
 data "aws_iam_role" "lab" {
   name = var.lab_role_name
 }
-
-data "aws_ssm_parameter" "ecs_ami" {
-  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
-}

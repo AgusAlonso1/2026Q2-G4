@@ -1,6 +1,17 @@
+data "aws_ec2_instance_type" "this" {
+  instance_type = var.instance_type
+}
+
+data "aws_ssm_parameter" "ami" {
+  name = format(
+    "/aws/service/ecs/optimized-ami/amazon-linux-2023/%srecommended/image_id",
+    contains(data.aws_ec2_instance_type.this.supported_architectures, "arm64") ? "arm64/" : "",
+  )
+}
+
 resource "aws_launch_template" "this" {
   name                   = var.name
-  image_id               = var.ami_id
+  image_id               = data.aws_ssm_parameter.ami.insecure_value
   instance_type          = var.instance_type
   vpc_security_group_ids = [var.security_group_id]
   user_data              = base64encode(templatefile("${path.module}/templates/ecs.sh.tftpl", { cluster = var.cluster_name }))
@@ -73,7 +84,7 @@ resource "aws_ecs_capacity_provider" "this" {
 
     managed_scaling {
       status                    = "ENABLED"
-      target_capacity           = 100
+      target_capacity           = var.target_capacity
       minimum_scaling_step_size = 1
       maximum_scaling_step_size = 2
     }

@@ -192,6 +192,8 @@ Después, entrar por `website_url`:
 
    ![Enviar: confirmación con el resumen antes de mandar el dinero](img/enviar.png)
 
+   ![Retirar: confirmación con la cuenta de destino y lo que queda](img/retirar.png)
+
    ![Actividad: el mes con lo que entró y salió, agrupado por día](img/actividad.png)
 
 4. **Operación** (salud y qué tarea atendió, proveedor activo, cierre contable, archivado,

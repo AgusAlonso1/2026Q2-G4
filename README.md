@@ -40,9 +40,12 @@ Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions*
 
 | Herramienta | Versión / nota |
 |---|---|
-| Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
+| Terraform | `>= 1.10, < 2.0` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
 | AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`), sólo para correr desde una máquina local |
 | Docker | Sólo para correr desde una máquina local: `make imagen` construye la imagen del backend |
+| Git | Para ejecutar localmente: se usa para calcular el tag de la imagen del backend |
+| Make | Para ejecutar los comandos del Makefile desde una máquina local |
+| jq | Para ejecutar localmente: se usa en el script de eliminación de buckets y para consultar secretos |
 | Cuenta | AWS Academy: usa `LabRole` y `LabInstanceProfile`, que ya existen en el laboratorio |
 
 Para desplegar desde GitHub Actions no hace falta nada instalado localmente: alcanza con los
@@ -143,6 +146,11 @@ la base:
 ```bash
 curl <api_url>/health
 ```
+
+El endpoint devuelve HTTP 200 incluso si la base no responde.
+Para comprobar la conexión a PostgreSQL, verificar que el campo
+`base` del JSON sea `"ok"`; si falla, devuelve `"sin_respuesta"`
+y `estado` pasa a `"degradado"`.
 
 Después, entrar por `website_url`:
 
@@ -355,9 +363,10 @@ tareas, que ECS registra solo, y el health check es HTTP a `/health`.
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
 SSM, según la arquitectura de la instancia), el disco raíz cifrado e IMDSv2 obligatorio, un ASG
-y el capacity provider que lo escala según las tareas. El de la API apunta a tener ocupado el
-80 % de las instancias (`target_capacity`), así que una tarea nueva arranca sin esperar a que se
-lance otra.
+y el capacity provider que lo escala según las tareas. Para la API se configura
+`target_capacity = 80`, con el objetivo de mantener capacidad de reserva y reducir
+la espera al iniciar nuevas tareas. Esto no garantiza un arranque inmediato:
+puede ser necesario lanzar nuevas instancias.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.
@@ -407,7 +416,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `length` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
-| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia es Graviton |
+| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia admite esa arquitectura |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
@@ -432,7 +441,13 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
-| `validation` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf`, `modules/capacity/variables.tf` | `archive_schedule` sólo acepta 0 o 1 tarea, `log_retention_days` sólo los valores de CloudWatch y `target_capacity` de 1 a 100: un error falla en el `plan`, no en el apply |
+
+### Validación de variables
+
+Los bloques `validation` comprueban los valores de entrada.
+Por ejemplo, limitan `archive_schedule` a 0 o 1 tarea,
+`log_retention_days` a valores admitidos por CloudWatch y
+`target_capacity` al rango de 1 a 100.
 
 ### Data sources
 

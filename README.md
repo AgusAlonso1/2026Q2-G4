@@ -118,7 +118,9 @@ En un pull request que viene de un fork o de dependabot, GitHub no le pasa los s
 workflow: ahí
 **Terraform** corre `fmt`, `init` y `validate`, y el `plan` aparece como salteado (*skipped*)
 en lugar de fallar por falta de credenciales. El `plan` contra la cuenta corre en los pull
-requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**.
+requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**. Si
+el repositorio no tiene los secrets de AWS (o la sesión del laboratorio venció y nadie los
+renovó), en un pull request el `plan` también se saltea con un aviso en el resumen del run.
 
 Los workflows que ya traía el repositorio (`terraform-format`, `terraform-docs`, `tfsec`)
 corren en paralelo en cada pull request. `terraform-docs` regenera los README de

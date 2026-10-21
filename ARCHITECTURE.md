@@ -54,17 +54,47 @@ camino exista). Una NACL no tiene estado: repetir esas reglas obligaría a abrir
 puertos efímeros de vuelta, y sumaría superficie de error sin agregar aislamiento. Se usaría
 para negar un origen puntual, que es lo único que un security group no puede expresar.
 
-**Entrada: un NLB.** Fue la corrección de la segunda entrega (ver
-[Correcciones](#10-correcciones-de-entregas-anteriores)). El NLB escucha TCP:80 en las
-subredes públicas de las dos AZ, con balanceo entre zonas, y reenvía la conexión tal cual a la
-IP de cada tarea de la API (targets `ip`, porque con red `awsvpc` cada tarea tiene la suya); ECS
-registra y saca las tareas solo. Al ser de capa 4 no agrega latencia ni necesita *pre-warming*,
-y como detrás hay un único servicio no hace falta ruteo por path ni por host, que es lo que
-aporta un ALB. Tiene su propio security group, así que la regla de `app` dice "desde el NLB" y
-no "desde un rango". El health check sí es HTTP: pide `/health`, que responde 200 mientras el
-proceso esté vivo e informa en el cuerpo si llega a la base. Una caída de la base no le hace
-sacar al NLB todas las tareas a la vez, cosa que no resolvería nada. La consecuencia es el escalado: la métrica de requests por
-target (`ALBRequestCountPerTarget`) sólo existe en un ALB, así que la API escala por CPU.
+### Entrada: por qué un NLB
+
+Fue la corrección de la segunda entrega (ver
+[Correcciones](#10-correcciones-de-entregas-anteriores)): por la naturaleza de la aplicación,
+el balanceador correcto es uno de red y no uno de aplicación. Un PSP es un núcleo transaccional,
+no un sitio web, y lo que necesita de la entrada es lo que da la capa 4:
+
+- **Latencia mínima en cada pago.** El caso que fija la latencia es un pago con una persona
+  esperando en la caja. El NLB reenvía la conexión TCP tal cual, sin abrir el HTTP ni armar una
+  segunda conexión hacia la tarea: agrega microsegundos, donde un ALB agrega milisegundos por
+  request.
+- **Picos bruscos sin calentamiento.** El volumen se multiplica en pocas horas (el cobro de
+  haberes). Un NLB atiende millones de requests por segundo desde el primer minuto; un ALB
+  escala de a poco y, ante un salto brusco, puede responder 503 mientras crece, salvo que se le
+  pida a AWS que lo precaliente.
+- **Conexiones largas.** Comercios, terminales y proveedores mantienen conexiones abiertas y
+  reutilizadas; el NLB las sostiene sin cortarlas por request.
+- **Protocolos que no son HTTP.** La red de pagos (adquirentes, terminales POS) habla ISO 8583
+  sobre TCP. Un ALB sólo entiende HTTP y gRPC; un NLB deja recibir ese tráfico el día que el
+  núcleo se conecte directo a la red, sin cambiar la entrada.
+- **TLS de punta a punta.** Con un NLB el TLS puede terminar en la aplicación (*pass-through*),
+  así los datos del pago no se descifran en un intermediario, que es lo que pide PCI DSS para
+  la transmisión de datos de tarjeta. Hoy el listener es TCP:80 porque el laboratorio no tiene
+  dominio para emitir un certificado.
+- **IP fija por zona.** Bancos y proveedores financieros autorizan por lista blanca de IP. Un
+  NLB puede tener una Elastic IP por zona; las IP de un ALB cambian. Hoy la salida hacia el
+  proveedor ya tiene IP fija (la del NAT, `nat_public_ip`).
+- **Nada de lo que aporta un ALB hace falta.** Detrás hay un único servicio, así que no hay
+  ruteo por path ni por host; la autenticación la hace la aplicación con el token de Cognito, y
+  no hay contenido que reescribir o redirigir.
+
+Cómo está armado: escucha TCP:80 en las subredes públicas de las dos AZ, con balanceo entre
+zonas, y reenvía a la IP de cada tarea de la API (targets `ip`, porque con red `awsvpc` cada
+tarea tiene la suya); ECS registra y saca las tareas solo. Tiene su propio security group, así
+que la regla de `app` dice "desde el NLB" y no "desde un rango". El health check sí es HTTP:
+pide `/health`, que responde 200 mientras el proceso esté vivo e informa en el cuerpo si llega a
+la base, para que una caída de la base no le haga sacar al NLB todas las tareas a la vez.
+
+Lo que se resigna: la métrica de requests por target (`ALBRequestCountPerTarget`) sólo existe en
+un ALB, así que la API escala por CPU; y AWS WAF no se puede poner delante de un NLB (va en ALB,
+CloudFront o API Gateway), así que la validación de cada pedido queda en la aplicación.
 
 ## 3. Cómputo
 
@@ -389,7 +419,7 @@ nuevo y Destroy no tendría qué destruir.
 |---|---|---|
 | TP1 | Avanzar con la propuesta 2, el núcleo transaccional elástico | Es este sistema |
 | TP1 | Un sistema financiero asíncrono obliga a lidiar con concurrencia y consistencia eventual | La concurrencia se resuelve en la base: bloqueo de fila sobre `saldos` en orden de id, idempotencia por restricción única y transacciones que escriben asientos y saldos juntos (ver [Datos](#4-datos)). La liquidación en sí es síncrona, dentro del request: el caso que fija la latencia es un pago con una persona esperando, y una cola agregaba más espera que la que ahorraba. Lo que sí es asíncrono es lo que depende de afuera: los egresos que el proveedor no confirma quedan en duda y se resuelven por consulta, y el archivado corre aparte, por horario |
-| TP2 | Usar un network load balancer y no un application load balancer | NLB con targets `ip` (ver [Entrada](#2-red)). La API escala por CPU, porque la métrica de requests por target es sólo del ALB |
+| TP2 | Por la naturaleza de la aplicación, usar un network load balancer y no un application load balancer | NLB con targets `ip`. La justificación (latencia, picos sin calentamiento, conexiones largas, ISO 8583 sobre TCP, TLS de punta a punta e IP fija) está en [Entrada: por qué un NLB](#entrada-por-qué-un-nlb). La API escala por CPU, porque la métrica de requests por target es sólo del ALB |
 
 ## 11. Requisitos del TP
 

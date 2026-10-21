@@ -267,11 +267,11 @@ callback sólo recibe su ARN y lo lee con el SDK una vez por instancia; si la le
 queda guardado y el próximo login reintenta. La Lambda no corre en la VPC, así que no necesita
 endpoint.
 
-Así se sigue lo que pide la clase de seguridad, no dejar secretos en el código, el repositorio
-ni las variables de entorno de la configuración: el valor no está en el repo ni en la task
-definition, sólo en Secrets Manager. El contenedor sí lo recibe como variable de entorno al
-arrancar, porque es lo que lee el binario; queda en la memoria del proceso, no en ningún lugar
-visible desde la consola.
+Los valores secretos no están escritos en el repositorio ni directamente en la
+task definition, que sólo contiene referencias a Secrets Manager. También quedan
+en el state de Terraform, por lo que debe protegerse como información sensible.
+Al arrancar, el contenedor recibe los valores como variables de entorno para
+que el binario pueda utilizarlos.
 
 **Sin rotación automática.** Secrets Manager puede rotar solo, pero eso necesita una Lambda de
 rotación con su rol, y AWS Academy no deja crear roles. Rotar hoy es cambiar el valor en
@@ -408,8 +408,7 @@ nuevo y Destroy no tendría qué destruir.
   para hablar con ECS, ECR y Logs.
 - **La API en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
   certificado. El access token y las claves de operación (`X-Admin-Key`, `X-Mock-Key`) viajan
-  en claro entre el navegador y el NLB; el login, en cambio, es HTTPS de punta a punta (Hosted
-  UI y API Gateway).
+  en claro entre el navegador y el NLB; la Hosted UI de Cognito y el callback de API Gateway usan HTTPS, pero el frontend se sirve por HTTP, por lo que el flujo completo no está protegido de extremo a extremo por HTTPS.
 - **Los secretos siguen en el state de Terraform**, porque los genera Terraform. El state está
   en un bucket privado y cifrado.
 - **`LabRole` para todo**: las tareas, el agente de ECS y la Lambda tienen los permisos del rol

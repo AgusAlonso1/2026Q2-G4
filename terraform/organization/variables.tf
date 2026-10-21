@@ -77,7 +77,7 @@ variable "db_max_connections" {
 }
 
 variable "image_tag" {
-  description = "Tag de la imagen del backend en ECR. make imagen la sube con el commit actual y make plan lo pasa solo."
+  description = "Tag de la imagen del backend en ECR: el hash del árbol de apps/ledger, así que sólo cambia si cambia el backend. make imagen la sube con ese tag y make plan lo pasa solo."
   type        = string
   default     = "sin-imagen"
 }

@@ -126,6 +126,7 @@ func correr() error {
 	api := &API{
 		svc: svc, pool: pool, mock: simulado, cors: politica,
 		sesiones: sesiones, avisos: receptor, adminClave: cfg.AdminClave,
+		bienvenida: cfg.Bienvenida,
 		secretos: Secretos{
 			Mock: cfg.MockClave, Proveedor: cfg.ProveedorClave,
 			Webhook: cfg.WebhookSecreto, Admin: cfg.AdminClave,

@@ -34,6 +34,10 @@ type API struct {
 
 	adminClave string
 
+	// Lo que recibe cada cuenta nueva desde la cuenta interna de ajustes. Lo decide el server: si
+	// lo mandara el cliente, cualquiera con un token abriría una cuenta con el saldo que quiera.
+	bienvenida int64
+
 	secretos Secretos
 }
 
@@ -171,6 +175,7 @@ func (a *API) crearCuenta(w http.ResponseWriter, r *http.Request) {
 		}
 		e.Titular = s.Sub
 	}
+	e.SaldoInicialCentavos = a.bienvenida
 	c, err := a.svc.CrearCuenta(r.Context(), e)
 	if err != nil {
 		apierr.EscribirError(w, err)

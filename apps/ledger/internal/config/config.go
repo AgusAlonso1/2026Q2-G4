@@ -38,6 +38,8 @@ type Config struct {
 
 	AdminAbierto bool
 
+	Bienvenida int64
+
 	ConciliacionIntervalo time.Duration
 
 	WebhookURL      string
@@ -68,6 +70,7 @@ func Cargar() (Config, error) {
 		MockAbierto:            os.Getenv("MOCK_ABIERTO") == "1",
 		AdminClave:             os.Getenv("ADMIN_API_KEY"),
 		AdminAbierto:           os.Getenv("ADMIN_ABIERTO") == "1",
+		Bienvenida:             int64(entero("SALDO_BIENVENIDA_CENTAVOS", 5000000)),
 		ConciliacionIntervalo:  duracion("CONCILIACION_INTERVALO", 30*time.Second),
 		WebhookURL:             os.Getenv("WEBHOOK_URL"),
 		WebhookSecreto:         os.Getenv("WEBHOOK_SECRET"),
@@ -81,6 +84,10 @@ func Cargar() (Config, error) {
 	}
 	if c.Bucket == "" && c.ObjetosDir == "" {
 		return c, fmt.Errorf("falta S3_BUCKET (o OBJETOS_DIR para correr local)")
+	}
+
+	if c.Bienvenida < 0 {
+		return c, fmt.Errorf("SALDO_BIENVENIDA_CENTAVOS no puede ser negativo")
 	}
 
 	if c.WebhookURL != "" && c.WebhookSecreto == "" {

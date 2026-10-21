@@ -163,9 +163,11 @@ paths:
         La cuenta queda a nombre del usuario del token: cada usuario de Cognito tiene una
         sola cuenta, y es la única que puede leer y operar.
 
-        El saldo inicial es opcional y **se asienta contra la cuenta interna de ajustes**,
-        de modo que el ledger sigue balanceado: no aparece dinero de la nada, aparece un
-        ajuste explícito y auditable. En producción el saldo entra por `/ingresos`.
+        Cada cuenta nueva arranca con un saldo de bienvenida que fija el server
+        (`SALDO_BIENVENIDA_CENTAVOS`, $ 50.000 por defecto; 0 lo desactiva): el cliente no lo
+        elige. **Se asienta contra la cuenta interna de ajustes**, de modo que el ledger sigue
+        balanceado: no aparece dinero de la nada, aparece un ajuste explícito y auditable. En
+        producción el saldo entra por `/ingresos`.
       operationId: crearCuenta
       requestBody:
         required: true
@@ -177,7 +179,6 @@ paths:
               properties:
                 alias: { type: string, example: ana }
                 tipo: { type: string, enum: [usuario, comercio] }
-                saldo_inicial_centavos: { type: integer, format: int64, minimum: 0 }
       responses:
         '201':
           description: Creada.

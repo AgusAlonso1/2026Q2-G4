@@ -1,7 +1,7 @@
 # storage
 
-Bucket S3 del proyecto: guarda los meses archivados del ledger. Se accede por el gateway
-endpoint, sin pasar por el NAT. Se cifra con la clave KMS del proyecto (SSE-KMS) y su
+Bucket S3 del proyecto: guarda los meses archivados del ledger (`transaction-history/`) y las
+exportaciones (`exports/`). Se accede por el gateway endpoint, sin pasar por el NAT. Se cifra con la clave KMS del proyecto (SSE-KMS) y su
 política rechaza los pedidos que no usan HTTPS.
 
 El bucket no lo crea el módulo sino [`scripts/buckets.sh`](../../../scripts/buckets.sh), antes del

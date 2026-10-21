@@ -1,7 +1,11 @@
 # security_groups
 
-Un security group por capa, encadenados por referencia entre grupos: `alb ← internet`,
-`app ← alb`, `data ← app, archive`. Sin SSH y con las NACLs por defecto.
+Un security group por capa (`nlb`, `app`, `archive`, `data`), más el de los hosts de ECS
+(`host`) y el de los interface endpoints (`endpoints`). Se encadenan por referencia entre
+grupos: `nlb ← internet`, `app ← nlb`, `data ← app, archive` y `endpoints ← host`. Las salidas
+también están acotadas: a otro grupo o a la prefix list de S3, y sólo `app` sale a Internet
+(proveedor y webhook, por el NAT). Las reglas salen de una sola tabla en `locals`. Sin SSH y
+con las NACLs por defecto.
 
 <!-- BEGIN_TF_DOCS -->
 ## Requirements

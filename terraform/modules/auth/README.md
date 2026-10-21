@@ -1,7 +1,7 @@
 # auth
 
-Login con Cognito mediante el workaround de la cátedra. El frontend se sirve por HTTP desde S3,
-y Cognito sólo acepta callbacks HTTPS. Por eso el callback es una ruta de API Gateway que
+Login con Cognito. El frontend se sirve por HTTP desde S3, y Cognito sólo acepta callbacks
+HTTPS. Por eso el callback es una ruta de API Gateway que
 invoca una Lambda: la Lambda canjea el `code` por tokens y redirige al frontend con los
 tokens en el fragment (`#access_token=…`).
 

@@ -257,8 +257,9 @@ Internet y sólo la API sale a Internet.
 
 Bucket privado del proyecto: el archivo del ledger (`transaction-history/`) y las exportaciones
 (`exports/`). Versionado, cifrado con la clave KMS del proyecto (SSE-KMS con bucket key), con
-bloqueo de acceso público y una política que rechaza cualquier pedido que no venga por HTTPS. El lifecycle borra las versiones reemplazadas a
-los 30 días y pasa el archivo a STANDARD_IA a los 30 días y a GLACIER al año.
+bloqueo de acceso público y una política que rechaza cualquier pedido que no venga por HTTPS.
+El lifecycle borra las versiones reemplazadas a los 30 días y pasa el archivo a STANDARD_IA a
+los 30 días y a GLACIER al año.
 
 El bucket lo crea `make apply` con la AWS CLI y el módulo lo configura (ver
 [Estado](ARCHITECTURE.md#6-estado)).
@@ -310,8 +311,8 @@ acceso público. Expone la `DB_URL` de los binarios, con TLS obligatorio.
 
 ### [`modules/load_balancer`](terraform/modules/load_balancer)
 
-NLB público con un listener TCP:80 y el target group de la API. Los targets son las IP de las tareas, que
-ECS registra solo, y el health check es HTTP a `/health`.
+NLB público con un listener TCP:80 y el target group de la API. Los targets son las IP de las
+tareas, que ECS registra solo, y el health check es HTTP a `/health`.
 
 **Recursos:** `aws_lb.this`, `aws_lb_target_group.api` y `aws_lb_listener.http`.
 
@@ -320,8 +321,10 @@ ECS registra solo, y el health check es HTTP a `/health`.
 ### [`modules/capacity`](terraform/modules/capacity)
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
-SSM, según la arquitectura de la instancia), el disco raíz cifrado e IMDSv2 obligatorio, un ASG y
-el capacity provider que lo escala según las tareas.
+SSM, según la arquitectura de la instancia), el disco raíz cifrado e IMDSv2 obligatorio, un ASG
+y el capacity provider que lo escala según las tareas. El de la API apunta a tener ocupado el
+80 % de las instancias (`target_capacity`), así que una tarea nueva arranca sin esperar a que se
+lance otra.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.

@@ -122,17 +122,18 @@ afuera. En S3 esa condición no sirve: las capas de ECR se bajan con URLs que fi
 cuenta, y por eso ahí la política lista los buckets.
 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
-definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas y suma
-tareas nuevas mientras haya lugar en el ASG, que admite una instancia más que el máximo de
-tareas (con las dos tareas habituales de la API llega al doble). Por eso la API llega a 5
-tareas y no más: su ASG queda en 6, el máximo que AWS Academy deja poner en un ASG. Una
+definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas ni pasa
+del doble. El ASG admite una instancia más que el máximo de tareas, y eso alcanza para ese doble
+en los dos servicios: 6 `c7g.large` alojan 12 tareas de la API y 2 `t3.micro`, dos del
+archivador. Por eso la API llega a 5 tareas y no más: su ASG queda en 6, el máximo que AWS
+Academy deja poner en un ASG. Una
 tarea nueva de la API recibe tráfico recién cuando pasa el health check del NLB, y si las
 nuevas no arrancan, el circuit breaker vuelve solo a la revisión anterior. Eso vale mientras la revisión nueva no haya
 aplicado una migración: un binario no arranca contra una base con migraciones que no conoce,
 así que las tareas viejas que siguen corriendo no se caen, pero las que ECS intente levantar con
 la revisión anterior fallan, y la salida es otro deploy hacia adelante. El tope de conexiones a
-la base de cada tarea se calcula como si cada servicio llegara al doble de su máximo, más de lo
-que puede correr a la vez, así que un deploy no agota las conexiones de RDS.
+la base de cada tarea se calcula como si los dos servicios llegaran a la vez al doble de su
+máximo, así que un deploy no agota las conexiones de RDS.
 
 El cluster tiene **Container Insights**: CPU, memoria y red por servicio y por tarea en
 CloudWatch, sin instalar nada en las instancias.

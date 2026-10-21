@@ -133,7 +133,9 @@ los módulos ya se commitean generados con terraform-docs, así que no debería 
 ### 3. Desplegar
 
 1. Con los secrets cargados: **Actions → Deploy → Run workflow** → rama `main` → escribir
-   `deploy`. Mergear no despliega nada.
+   `deploy`. Mergear no despliega nada, a propósito: las credenciales del laboratorio vencen con
+   cada sesión, y un apply que crea RDS Multi-AZ y gasta crédito tiene que ser una decisión
+   explícita, no un efecto de mergear. El `plan` sí corre en los pull requests.
 
    **Desde otra cuenta** (por ejemplo, la de la cátedra): Deploy se lanza a mano y usa los
    secrets del repositorio donde corre, así que hace falta un repositorio propio con este código,

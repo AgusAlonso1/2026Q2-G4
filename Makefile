@@ -4,9 +4,14 @@ REGION ?= us-east-1
 # Hash del árbol de apps/ledger: cambia sólo si cambia el backend, no con cada commit.
 IMAGE_TAG ?= $(shell git rev-parse --short=12 HEAD:apps/ledger)
 PLATFORMS ?= linux/amd64,linux/arm64
+# Prefijo de todo: los nombres de los recursos (project_name) y los de los buckets que crea
+# scripts/buckets.sh salen de acá, así no se desalinean.
+PROJECT ?= ledger
 
 export REGION
+export PROJECT
 export TF_VAR_image_tag = $(IMAGE_TAG)
+export TF_VAR_project_name = $(PROJECT)
 
 .PHONY: help fmt fmt-check init validate tag imagen plan apply destroy clean
 

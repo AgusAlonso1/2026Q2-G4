@@ -171,6 +171,14 @@ logs no cambian, pero nadie puede usarlos con credenciales de otra cuenta para m
 afuera. En S3 esa condición no sirve: las capas de ECR se bajan con URLs que firma AWS, no la
 cuenta, y por eso ahí la política lista los buckets.
 
+**Infraestructura inmutable.** Nada se modifica en caliente: una versión nueva del backend es
+una imagen nueva en ECR (los tags son inmutables, así que un tag siempre es la misma imagen) y
+una revisión nueva de la task definition, y ECS reemplaza las tareas en lugar de actualizarlas.
+No hay SSH ni configuración manual en las instancias. La excepción es la AMI: el launch template
+toma la recomendada en cada apply, pero sólo la usan las instancias nuevas. No se usa
+`prevent_destroy` porque el workflow Destroy tiene que poder borrar todo, ni hace falta
+`create_before_destroy`: los reemplazos de tareas los hace ECS, sin cortar el servicio.
+
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas ni pasa
 del doble. El ASG admite una instancia más que el máximo de tareas, y eso alcanza para ese doble
@@ -258,6 +266,18 @@ El client secret de Cognito está en un tercer secreto, `ledger/callback`. La La
 callback sólo recibe su ARN y lo lee con el SDK una vez por instancia; si la lectura falla no
 queda guardado y el próximo login reintenta. La Lambda no corre en la VPC, así que no necesita
 endpoint.
+
+Así se sigue lo que pide la clase de seguridad, no dejar secretos en el código, el repositorio
+ni las variables de entorno de la configuración: el valor no está en el repo ni en la task
+definition, sólo en Secrets Manager. El contenedor sí lo recibe como variable de entorno al
+arrancar, porque es lo que lee el binario; queda en la memoria del proceso, no en ningún lugar
+visible desde la consola.
+
+**Sin rotación automática.** Secrets Manager puede rotar solo, pero eso necesita una Lambda de
+rotación con su rol, y AWS Academy no deja crear roles. Rotar hoy es cambiar el valor en
+Terraform: el `version-id` de la referencia cambia y ECS reemplaza las tareas. Una rotación
+hecha a mano fuera de Terraform no llegaría a las tareas, porque siguen apuntando a la versión
+fija.
 
 Los secretos se crean con `recovery_window_in_days = 0`: Secrets Manager reserva por defecto
 el nombre 30 días después de borrarlo, y el siguiente Deploy fallaría por nombre duplicado.
@@ -357,8 +377,9 @@ nuevo y Destroy no tendría qué destruir.
 - **El nombre lleva la cuenta**, en el namespace regional de la cuenta (`-an`), igual que los
   otros dos buckets: el mismo código despliega en cualquier cuenta sin editar nada, y nadie
   más puede ocupar ese nombre.
-- **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). No hace
-  falta una tabla de DynamoDB. El `plan` de los pull requests corre con `-lock=false`: no
+- **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). El
+  esquema clásico, S3 más una tabla de DynamoDB para el lock, quedó deprecado desde Terraform
+  1.11 a favor de éste, así que no hace falta crear ni pagar esa tabla. El `plan` de los pull requests corre con `-lock=false`: no
   escribe el state, y así no espera a un deploy en curso.
 - **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
   quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
@@ -397,8 +418,9 @@ nuevo y Destroy no tendría qué destruir.
   clave nombraría sólo a los que la necesitan.
 - **Los buckets del proyecto quedan fuera del state** (ver [Estado](#8-estado)). Terraform no
   se entera si alguien borra uno a mano, `terraform apply` sin `make apply` falla porque no
-  existen, y el nombre se arma en dos lugares: el script y los módulos, con `project_name =
-  "ledger"`.
+  existen, y el nombre se arma en dos lugares: el script y los módulos. Para que no se
+  desalineen, el `Makefile` define `PROJECT` una sola vez y se lo pasa a los dos (al script y a
+  Terraform como `TF_VAR_project_name`).
 - **RDS Multi-AZ** aunque duplique el tiempo del primer apply: la base es lo único con estado y
   sigue disponible si se cae una zona. `db_multi_az = false` la deja en una sola AZ para probar.
 - **La base no sobrevive a Destroy**: sin deletion protection ni snapshot final, porque Destroy

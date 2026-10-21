@@ -1,7 +1,12 @@
 variable "project_name" {
-  description = "Prefijo de todos los recursos (ledger-vpc, ledger-nlb, ...)."
+  description = "Prefijo de todos los recursos (ledger-vpc, ledger-nlb, ...). Desde make se fija con PROJECT, que también usa scripts/buckets.sh para los nombres de los buckets."
   type        = string
   default     = "ledger"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{2,19}$", var.project_name))
+    error_message = "Entre 3 y 20 caracteres: minúsculas, números y guiones, empezando por una letra (va en nombres de buckets, de RDS y de Cognito)."
+  }
 }
 
 variable "aws_region" {

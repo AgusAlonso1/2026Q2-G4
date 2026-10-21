@@ -2,13 +2,15 @@
 set -euo pipefail
 
 region="${REGION:-us-east-1}"
+# El mismo prefijo que project_name: el Makefile exporta PROJECT y TF_VAR_project_name juntos.
+name="${PROJECT:-ledger}"
 account=$(aws sts get-caller-identity --query Account --output text)
 suffix="$account-$region-an"
-state="ledger-tfstate-$suffix"
+state="$name-tfstate-$suffix"
 # Los buckets del proyecto se crean acá y no con aws_s3_bucket: el SCP de AWS Academy niega
 # s3:GetBucketObjectLockConfiguration, y el provider lo lee cada vez que refresca un bucket.
-# Son los nombres que arman modules/storage y modules/website con project_name = "ledger".
-project=("ledger-$suffix" "ledger-web-$suffix")
+# Son los nombres que arman modules/storage y modules/website.
+project=("$name-$suffix" "$name-web-$suffix")
 
 exists() {
   aws s3api head-bucket --bucket "$1" >/dev/null 2>&1

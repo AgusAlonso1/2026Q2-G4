@@ -116,11 +116,11 @@ workflow: ahí
 en lugar de fallar por falta de credenciales. El `plan` contra la cuenta corre en los pull
 requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**.
 
-Los workflows de la cátedra (`terraform-format`, `terraform-docs`, `tfsec`) corren en paralelo
-en cada pull request. `terraform-docs` regenera los README de `terraform/modules/` y trata de
-commitearlos en la rama del PR, para lo que necesita que el token del workflow tenga permiso de
-escritura (un PR desde un fork no lo tiene). Los README de los módulos ya se commitean
-generados con terraform-docs, así que no debería encontrar cambios.
+Los workflows que ya traía el repositorio (`terraform-format`, `terraform-docs`, `tfsec`)
+corren en paralelo en cada pull request. `terraform-docs` regenera los README de
+`terraform/modules/` y trata de commitearlos en la rama del PR, para lo que necesita que el
+token del workflow tenga permiso de escritura (un PR desde un fork no lo tiene). Los README de
+los módulos ya se commitean generados con terraform-docs, así que no debería encontrar cambios.
 
 ### 3. Desplegar
 
@@ -213,6 +213,38 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 
 ---
 
+## Buckets de S3: los crea la AWS CLI
+
+Los tres buckets del proyecto no son recursos `aws_s3_bucket`: los crea
+[`scripts/buckets.sh`](scripts/buckets.sh) con `aws s3api create-bucket`, tanto en el pipeline
+como desde una máquina local.
+
+| Bucket | Lo crea | Por qué no Terraform |
+|---|---|---|
+| `ledger-<cuenta>-us-east-1-an` (archivo y exportaciones) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
+| `ledger-web-<cuenta>-us-east-1-an` (frontend) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
+| `ledger-tfstate-<cuenta>-us-east-1-an` (state) | `make init` | El backend lo necesita antes del `init` |
+
+**El SCP de AWS Academy.** La política de la organización del laboratorio niega
+`s3:GetBucketObjectLockConfiguration` sobre cualquier bucket. El provider de AWS hace esa
+lectura cada vez que lee un `aws_s3_bucket`, después de crearlo y en cada refresh, y no tiene
+ningún argumento para saltearla: el bucket se crea, pero el apply falla y el recurso queda
+*tainted*. Por eso el bucket lo crea la CLI, y Terraform administra todo lo demás con los
+recursos que no leen el object lock: versionado, cifrado, bloqueo de acceso público, política,
+lifecycle, website y los objetos. Los módulos `storage` y `website` arman el mismo nombre que el
+script.
+
+**El bucket del state** se crea aparte por otro motivo: el backend S3 tiene que existir antes de
+`terraform init`, así que no puede ser un recurso del mismo state (ver
+[Estado](ARCHITECTURE.md#6-estado)).
+
+`make destroy` (y el workflow **Destroy**) borra los tres buckets con todas sus versiones, pero
+sólo cuando `terraform destroy` dejó el state vacío. En una cuenta sin ese SCP, los dos buckets
+del proyecto serían un `aws_s3_bucket` dentro de cada módulo y el script sólo crearía el del
+state.
+
+---
+
 ## Módulos
 
 La composición raíz es [`terraform/organization`](terraform/organization): instancia los módulos
@@ -262,7 +294,7 @@ El lifecycle borra las versiones reemplazadas a los 30 días y pasa el archivo a
 los 30 días y a GLACIER al año.
 
 El bucket lo crea `make apply` con la AWS CLI y el módulo lo configura (ver
-[Estado](ARCHITECTURE.md#6-estado)).
+[Buckets de S3](#buckets-de-s3-los-crea-la-aws-cli)).
 
 **Recursos:** `aws_s3_bucket_versioning.this`,
 `aws_s3_bucket_server_side_encryption_configuration.this`,
@@ -278,7 +310,8 @@ objeto por archivo con su `Content-Type`, y publica `config.json` con lo que el 
 puede saber hasta el apply (`api_url`, `login_url`, `logout_url`). Se cifra con AES256 y no con
 KMS: los usuarios anónimos del sitio no pueden tener permiso sobre una clave.
 
-Como el de `storage`, el bucket lo crea `make apply` con la AWS CLI.
+Como el de `storage`, el bucket lo crea `make apply` con la AWS CLI (ver
+[Buckets de S3](#buckets-de-s3-los-crea-la-aws-cli)).
 
 **Recursos:** `aws_s3_bucket_website_configuration.this`,
 `aws_s3_bucket_policy.public_read`, `aws_s3_object.site` y `aws_s3_object.config`.
@@ -377,7 +410,8 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia es Graviton |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
-| `alltrue`, `contains` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea y que la retención de los logs sea una que acepta CloudWatch |
+| `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
+| `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
 
 ### Meta-argumentos utilizados
 
@@ -418,10 +452,10 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 
 ```
 .
-├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los de la cátedra
+├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los que ya traía el repo
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
 ├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
-├── img/                   # diagrama de arquitectura (.png y .drawio)
+├── img/                   # diagrama de arquitectura (.png y .drawio) y capturas de los pasos
 ├── scripts/
 │   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
 ├── terraform/

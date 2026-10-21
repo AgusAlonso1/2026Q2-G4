@@ -13,7 +13,7 @@ override.tf.json
 .terraformrc
 terraform.rc
 # .terraform.lock.hcl SÍ se commitea: fija las versiones exactas de los providers
-# para que la cátedra y el pipeline usen las mismas que nosotros.
+# para que cualquier máquina y el pipeline usen las mismas.
 
 # Variables: sólo el ejemplo va al repo
 *.tfvars

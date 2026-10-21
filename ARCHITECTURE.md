@@ -241,8 +241,8 @@ nuevo y Destroy no tendría qué destruir.
   `-backend-config`. Por eso [`backend.tf`](terraform/organization/backend.tf) no tiene
   `bucket`.
 - **El nombre lleva la cuenta**, en el namespace regional de la cuenta (`-an`), igual que los
-  otros dos buckets: el mismo código despliega en la cuenta del grupo y en la de la cátedra sin
-  editar nada, y nadie más puede ocupar ese nombre.
+  otros dos buckets: el mismo código despliega en cualquier cuenta sin editar nada, y nadie
+  más puede ocupar ese nombre.
 - **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). No hace
   falta una tabla de DynamoDB. El `plan` de los pull requests corre con `-lock=false`: no
   escribe el state, y así no espera a un deploy en curso.

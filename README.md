@@ -7,7 +7,8 @@ Cada usuario tiene una cuenta virtual con la que transfiere a otras cuentas, ing
 dinero hacia el exterior a través de un proveedor; cada operación se liquida dentro del mismo
 request contra un ledger de partida doble en PostgreSQL, y los meses viejos se archivan en S3.
 
-La arquitectura detallada está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
+La arquitectura detallada, con el porqué de cada decisión y cómo se aplicaron las correcciones de
+las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ![Diagrama de arquitectura en AWS](img/arquitectura.png)
 
@@ -38,15 +39,20 @@ Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions*
 
 ## Prerrequisitos
 
+**Desde GitHub Actions** (el camino recomendado) no hace falta nada instalado: alcanza con una
+cuenta de AWS Academy y los secrets del paso 1. El laboratorio ya trae `LabRole` y
+`LabInstanceProfile`, que es lo que usa el despliegue porque no deja crear IAM.
+
+**Desde una máquina local**, además:
+
 | Herramienta | Versión / nota |
 |---|---|
-| Terraform | `>= 1.10` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
-| AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`), sólo para correr desde una máquina local |
-| Docker | Sólo para correr desde una máquina local: `make imagen` construye la imagen del backend |
-| Cuenta | AWS Academy: usa `LabRole` y `LabInstanceProfile`, que ya existen en el laboratorio |
-
-Para desplegar desde GitHub Actions no hace falta nada instalado localmente: alcanza con los
-secrets del paso 1.
+| Terraform | `>= 1.10, < 2.0` (ver [`versions.tf`](terraform/organization/versions.tf)); el pipeline usa 1.16.6 |
+| AWS CLI | v2 reciente (`--bucket-namespace` en `create-bucket`) |
+| Docker con `buildx` | `make imagen` construye la imagen del backend para amd64 y arm64 |
+| Git | Calcula el tag de la imagen del backend (el hash de `apps/ledger`) |
+| Make | Ejecuta los comandos del Makefile |
+| jq | Lo usa el script que borra los buckets, y sirve para consultar los secretos |
 
 ---
 
@@ -114,7 +120,9 @@ En un pull request que viene de un fork o de dependabot, GitHub no le pasa los s
 workflow: ahí
 **Terraform** corre `fmt`, `init` y `validate`, y el `plan` aparece como salteado (*skipped*)
 en lugar de fallar por falta de credenciales. El `plan` contra la cuenta corre en los pull
-requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**.
+requests dentro del mismo repositorio, al lanzar **Terraform** a mano y en cada **Deploy**. Si
+el repositorio no tiene los secrets de AWS (o la sesión del laboratorio venció y nadie los
+renovó), en un pull request el `plan` también se saltea con un aviso en el resumen del run.
 
 Los workflows que ya traía el repositorio (`terraform-format`, `terraform-docs`, `tfsec`)
 corren en paralelo en cada pull request. `terraform-docs` regenera los README de
@@ -125,7 +133,15 @@ los módulos ya se commitean generados con terraform-docs, así que no debería 
 ### 3. Desplegar
 
 1. Con los secrets cargados: **Actions → Deploy → Run workflow** → rama `main` → escribir
-   `deploy`. Mergear no despliega nada.
+   `deploy`. Mergear no despliega nada, a propósito: las credenciales del laboratorio vencen con
+   cada sesión, y un apply que crea RDS Multi-AZ y gasta crédito tiene que ser una decisión
+   explícita, no un efecto de mergear. El `plan` sí corre en los pull requests.
+
+   **Desde otra cuenta** (por ejemplo, la de la cátedra): Deploy se lanza a mano y usa los
+   secrets del repositorio donde corre, así que hace falta un repositorio propio con este código,
+   por ejemplo un fork, con **Actions** habilitado (en un fork nuevo, GitHub lo deja apagado
+   hasta tocar *I understand my workflows*) y los tres secrets de AWS cargados. Todos los
+   nombres llevan el ID de la cuenta, así que no hay que editar nada.
 
    ![Workflow Deploy: Run workflow con la confirmación deploy](img/deploy.png)
 
@@ -144,11 +160,16 @@ la base:
 curl <api_url>/health
 ```
 
+El endpoint devuelve HTTP 200 incluso si la base no responde.
+Para comprobar la conexión a PostgreSQL, verificar que el campo
+`base` del JSON sea `"ok"`; si falla, devuelve `"sin_respuesta"`
+y `estado` pasa a `"degradado"`.
+
 Después, entrar por `website_url`:
 
 ![Pantalla de ingreso del sitio](img/login.png)
 
-1. **Continuar** lleva a la Hosted UI de Cognito. La primera vez, **Sign up** con un email y una
+1. **Ingresar** lleva a la Hosted UI de Cognito. La primera vez, **Sign up** con un email y una
    contraseña (8 caracteres, con minúsculas y números). Cognito manda un código a ese email; al
    cargarlo se vuelve al sitio con la sesión iniciada. El registro está abierto, así que no hace
    falta crear usuarios antes.
@@ -163,19 +184,35 @@ Después, entrar por `website_url`:
    aws cognito-idp admin-confirm-sign-up --user-pool-id <user_pool_id> --username <email>
    ```
 
-2. La primera vez pide un alias y crea la cuenta, con $ 50.000 de saldo inicial para la demo.
-3. La billetera: **Inicio**, **Enviar** (a otra cuenta), **Ingresar** (*Ya hice la
-   transferencia* simula el depósito del banco), **Retirar** (egreso por el proveedor) y
-   **Actividad**, con el resumen de cada mes: el de un mes archivado lo arma la API desde S3.
+2. La primera vez pide un alias y crea la cuenta. Arranca con $ 50.000 de saldo de bienvenida,
+   que fija la API (`SALDO_BIENVENIDA_CENTAVOS`) y se asienta contra la cuenta interna de
+   ajustes: el cliente no puede elegir con cuánto abre su cuenta.
+3. La billetera:
+   - **Inicio**: saldo (se puede ocultar), alias para compartir y movimientos recientes.
+   - **Enviar**: elegir a quién (con buscador), el monto (valida contra el saldo) y confirmar.
+   - **Ingresar**: el monto y un código para usar como concepto de la transferencia; *Ya hice
+     la transferencia* simula el aviso del banco.
+   - **Retirar**: CBU o CVU de 22 dígitos, el monto y confirmar. Sale por el proveedor: un
+     monto terminado en 13 centavos lo rechaza y uno terminado en 99 queda *en revisión* hasta
+     que la API lo resuelve por consulta.
+   - **Actividad**: mes por mes, con lo que entró, lo que salió y un filtro; el resumen de un
+     mes archivado lo arma la API desde S3.
+   - Cada operación tiene su comprobante, con el número de operación y su estado.
 
-   ![Inicio de la billetera: saldo y últimos movimientos](img/inicio.png)
+   ![Inicio de la billetera: saldo, alias y movimientos recientes](img/inicio.png)
 
-   ![Actividad: movimientos y resumen del mes](img/actividad.png)
+   ![Enviar: confirmación con el resumen antes de mandar el dinero](img/enviar.png)
 
-4. **Operación** muestra la salud y qué tarea atendió, el proveedor activo, el cierre contable,
-   el archivado, el extracto y la exportación, y la cinta de llamadas a la API con su código y
-   su latencia. Las tarjetas de `/admin/*` y del mock piden las claves (menú de la cuenta →
-   *Claves de operación*), que están en el secreto `ledger/api` de Secrets Manager:
+   ![Retirar: confirmación con la cuenta de destino y lo que queda](img/retirar.png)
+
+   ![Actividad: el mes con lo que entró y salió, agrupado por día](img/actividad.png)
+
+4. **Operación** (salud y qué tarea atendió, proveedor activo, cierre contable, archivado,
+   extracto y exportación, y la cinta de llamadas a la API con su código y su latencia) no la
+   ve un usuario común: aparece al activar el *Modo operación* desde el menú de la cuenta, con
+   la clave de administración (y la del mock para sus tarjetas). Las claves quedan sólo en esa
+   pestaña del navegador (`sessionStorage`) y se borran al cerrar sesión. Están en el secreto
+   `ledger/api` de Secrets Manager:
 
    ```bash
    aws secretsmanager get-secret-value --secret-id ledger/api --query SecretString --output text \
@@ -191,7 +228,7 @@ Después, entrar por `website_url`:
 ![Workflow Destroy: Run workflow con la confirmación destroy](img/destroy.png)
 
 Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
-[Estado](ARCHITECTURE.md#6-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
+[Estado](ARCHITECTURE.md#8-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
 el log group que crea Container Insights (`/aws/ecs/containerinsights/ledger-cluster/performance`,
 con retención de un día); ninguno de los dos molesta al próximo Deploy.
 
@@ -236,7 +273,7 @@ script.
 
 **El bucket del state** se crea aparte por otro motivo: el backend S3 tiene que existir antes de
 `terraform init`, así que no puede ser un recurso del mismo state (ver
-[Estado](ARCHITECTURE.md#6-estado)).
+[Estado](ARCHITECTURE.md#8-estado)).
 
 `make destroy` (y el workflow **Destroy**) borra los tres buckets con todas sus versiones, pero
 sólo cuando `terraform destroy` dejó el state vacío. En una cuenta sin ese SCP, los dos buckets
@@ -323,7 +360,7 @@ Como el de `storage`, el bucket lo crea `make apply` con la AWS CLI (ver
 User pool de Cognito con Hosted UI (login por email) y un app client con client secret. Como
 Cognito sólo acepta callbacks HTTPS, suma una HTTP API de API Gateway con las rutas `/callback`
 y `/logout` hacia una Lambda ([`apps/callback`](apps/callback)) que canjea el `code` por tokens
-(ver [Login con Cognito](ARCHITECTURE.md#5-login-con-cognito)). El client secret está en Secrets
+(ver [Login con Cognito](ARCHITECTURE.md#6-login-con-cognito)). El client secret está en Secrets
 Manager (`ledger/callback`) y la Lambda sólo recibe su ARN. El stage de API Gateway manda un
 access log JSON por request a su propio log group.
 
@@ -355,9 +392,10 @@ tareas, que ECS registra solo, y el health check es HTTP a `/health`.
 
 Las instancias de un servicio de ECS: launch template con la AMI optimizada para ECS (sale de
 SSM, según la arquitectura de la instancia), el disco raíz cifrado e IMDSv2 obligatorio, un ASG
-y el capacity provider que lo escala según las tareas. El de la API apunta a tener ocupado el
-80 % de las instancias (`target_capacity`), así que una tarea nueva arranca sin esperar a que se
-lance otra.
+y el capacity provider que lo escala según las tareas. Para la API se configura
+`target_capacity = 80`, con el objetivo de mantener capacidad de reserva y reducir
+la espera al iniciar nuevas tareas. Esto no garantiza un arranque inmediato:
+puede ser necesario lanzar nuevas instancias.
 
 **Recursos:** `aws_launch_template.this`, `aws_autoscaling_group.this` y
 `aws_ecs_capacity_provider.this`.
@@ -370,7 +408,7 @@ Un servicio de ECS: task definition con red `awsvpc`, el servicio con circuit br
 group cifrado y el autoscaling de las tareas, por CPU (la API) o por horario (el archivador).
 La task definition separa las variables comunes de las secretas: éstas son referencias
 (`valueFrom`) a Secrets Manager, y ECS lee el valor al arrancar la tarea (ver
-[Secretos y cifrado](ARCHITECTURE.md#4-secretos-y-cifrado)).
+[Secretos y cifrado](ARCHITECTURE.md#5-secretos-y-cifrado)).
 
 **Recursos:** `aws_ecs_task_definition.this`, `aws_ecs_service.this`,
 `aws_cloudwatch_log_group.this`, `aws_appautoscaling_target.this`,
@@ -407,7 +445,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `length` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `urlencode`, `join` | `modules/auth/outputs.tf` | Arma las URL de login y logout de la Hosted UI |
 | `templatefile` | `modules/capacity/main.tf` | El `user_data` de las instancias, con el nombre del cluster |
-| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia es Graviton |
+| `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia admite esa arquitectura |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
@@ -432,7 +470,21 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
-| `validation` | `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf`, `modules/capacity/variables.tf` | `archive_schedule` sólo acepta 0 o 1 tarea, `log_retention_days` sólo los valores de CloudWatch y `target_capacity` de 1 a 100: un error falla en el `plan`, no en el apply |
+
+### Validación de variables
+
+Los bloques `validation` comprueban los valores de entrada: limitan `archive_schedule` a 0 o 1
+tarea, `log_retention_days` a los valores que admite CloudWatch y `target_capacity` al rango de
+1 a 100. Están en `organization/variables.tf`, `modules/auth/variables.tf`,
+`modules/service/variables.tf` y `modules/capacity/variables.tf`, y un valor inválido falla en
+el `plan`, no a mitad del apply.
+
+### Bloques `dynamic`
+
+| Dónde | Para qué |
+|---|---|
+| `modules/storage/main.tf` | Una regla de lifecycle por prefijo, con sus transiciones |
+| `modules/service/main.tf` | El bloque `load_balancer` del servicio sólo si tiene target group (la API sí, el archivador no) |
 
 ### Data sources
 

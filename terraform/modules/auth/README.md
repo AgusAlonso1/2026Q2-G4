@@ -14,7 +14,8 @@ frontend → logout_url (Hosted UI) → GET <api>/logout → 302 <frontend>/
 - El app client es **confidencial**: el secret está en Secrets Manager (`<prefijo>/callback`) y
   la Lambda sólo tiene su ARN. Lo lee una vez por instancia, en el primer login.
 - No se le entrega refresh token al frontend. Cuando el access token vence, el frontend vuelve
-  a `login_url`, y si la sesión de la Hosted UI sigue viva, el usuario entra sin tipear nada.
+  a la pantalla de ingreso; al tocar **Ingresar** va a `login_url`, y si la sesión de la Hosted
+  UI sigue viva, el usuario entra sin tipear nada.
 - `/logout` existe porque Cognito también exige HTTPS en las logout URLs. Sin ese paso, la
   cookie de la Hosted UI sigue viva y no se puede cambiar de usuario.
 

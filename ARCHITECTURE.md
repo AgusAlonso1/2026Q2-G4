@@ -47,6 +47,55 @@ El aislamiento entre capas lo imponen los security groups, que se referencian en
 
 Las instancias (`host`) no aceptan ninguna conexión entrante: no hay SSH.
 
+Las NACL quedan en su regla permisiva por defecto, a propósito. El aislamiento ya lo dan dos
+controles que fallan de forma distinta: el ruteo (`data` y `archive` no tienen ruta a
+Internet, así que no existe el camino) y los security groups (que impiden la conexión aunque el
+camino exista). Una NACL no tiene estado: repetir esas reglas obligaría a abrir a mano los
+puertos efímeros de vuelta, y sumaría superficie de error sin agregar aislamiento. Se usaría
+para negar un origen puntual, que es lo único que un security group no puede expresar.
+
+### Entrada: por qué un NLB
+
+Fue la corrección de la segunda entrega (ver
+[Correcciones](#10-correcciones-de-entregas-anteriores)): por la naturaleza de la aplicación,
+el balanceador correcto es uno de red y no uno de aplicación. Un PSP es un núcleo transaccional,
+no un sitio web, y lo que necesita de la entrada es lo que da la capa 4:
+
+- **Latencia mínima en cada pago.** El caso que fija la latencia es un pago con una persona
+  esperando en la caja. El NLB reenvía la conexión TCP tal cual, sin abrir el HTTP ni armar una
+  segunda conexión hacia la tarea: agrega microsegundos, donde un ALB agrega milisegundos por
+  request.
+- **Picos bruscos sin calentamiento.** El volumen se multiplica en pocas horas (el cobro de
+  haberes). Un NLB atiende millones de requests por segundo desde el primer minuto; un ALB
+  escala de a poco y, ante un salto brusco, puede responder 503 mientras crece, salvo que se le
+  pida a AWS que lo precaliente.
+- **Conexiones largas.** Comercios, terminales y proveedores mantienen conexiones abiertas y
+  reutilizadas; el NLB las sostiene sin cortarlas por request.
+- **Protocolos que no son HTTP.** La red de pagos (adquirentes, terminales POS) habla ISO 8583
+  sobre TCP. Un ALB sólo entiende HTTP y gRPC; un NLB deja recibir ese tráfico el día que el
+  núcleo se conecte directo a la red, sin cambiar la entrada.
+- **TLS de punta a punta.** Con un NLB el TLS puede terminar en la aplicación (*pass-through*),
+  así los datos del pago no se descifran en un intermediario, que es lo que pide PCI DSS para
+  la transmisión de datos de tarjeta. Hoy el listener es TCP:80 porque el laboratorio no tiene
+  dominio para emitir un certificado.
+- **IP fija por zona.** Bancos y proveedores financieros autorizan por lista blanca de IP. Un
+  NLB puede tener una Elastic IP por zona; las IP de un ALB cambian. Hoy la salida hacia el
+  proveedor ya tiene IP fija (la del NAT, `nat_public_ip`).
+- **Nada de lo que aporta un ALB hace falta.** Detrás hay un único servicio, así que no hay
+  ruteo por path ni por host; la autenticación la hace la aplicación con el token de Cognito, y
+  no hay contenido que reescribir o redirigir.
+
+Cómo está armado: escucha TCP:80 en las subredes públicas de las dos AZ, con balanceo entre
+zonas, y reenvía a la IP de cada tarea de la API (targets `ip`, porque con red `awsvpc` cada
+tarea tiene la suya); ECS registra y saca las tareas solo. Tiene su propio security group, así
+que la regla de `app` dice "desde el NLB" y no "desde un rango". El health check sí es HTTP:
+pide `/health`, que responde 200 mientras el proceso esté vivo e informa en el cuerpo si llega a
+la base, para que una caída de la base no le haga sacar al NLB todas las tareas a la vez.
+
+Lo que se resigna: la métrica de requests por target (`ALBRequestCountPerTarget`) sólo existe en
+un ALB, así que la API escala por CPU; y AWS WAF no se puede poner delante de un NLB (va en ALB,
+CloudFront o API Gateway), así que la validación de cada pedido queda en la aplicación.
+
 ## 3. Cómputo
 
 La API y el archivador corren en **ECS con launch type EC2**, desde la misma imagen (cada
@@ -67,9 +116,10 @@ cada tarea tiene su propia ENI y su security group, y la instancia se queda una 
 `c7g.large` (3 ENIs) aloja dos tareas y una `t3.micro` (2 ENIs), una sola.
 
 El capacity provider de la API apunta a tener ocupado el 80 % de las instancias
-(`target_capacity`), así que siempre queda lugar libre: una tarea nueva, por scale-out o por
-deploy, arranca sin esperar a que se lance una instancia, y el capacity provider lanza la
-siguiente en segundo plano. El del archivador queda en 100 %: no tiene picos, y fuera de su
+(`target_capacity`), para dejar lugar de reserva: la primera tarea nueva de un scale-out o de un
+deploy suele encontrar dónde arrancar sin esperar, y el capacity provider lanza la siguiente
+instancia en segundo plano. No es una garantía: si llegan más tareas de las que entran en esa
+reserva, las que sobran esperan a que la instancia nueva se registre en el cluster. El del archivador queda en 100 %: no tiene picos, y fuera de su
 ventana baja a cero instancias.
 
 **Por qué EC2 y no Fargate.** La API es una carga base constante: un PSP no baja a cero y
@@ -121,6 +171,14 @@ logs no cambian, pero nadie puede usarlos con credenciales de otra cuenta para m
 afuera. En S3 esa condición no sirve: las capas de ECR se bajan con URLs que firma AWS, no la
 cuenta, y por eso ahí la política lista los buckets.
 
+**Infraestructura inmutable.** Nada se modifica en caliente: una versión nueva del backend es
+una imagen nueva en ECR (los tags son inmutables, así que un tag siempre es la misma imagen) y
+una revisión nueva de la task definition, y ECS reemplaza las tareas en lugar de actualizarlas.
+No hay SSH ni configuración manual en las instancias. La excepción es la AMI: el launch template
+toma la recomendada en cada apply, pero sólo la usan las instancias nuevas. No se usa
+`prevent_destroy` porque el workflow Destroy tiene que poder borrar todo, ni hace falta
+`create_before_destroy`: los reemplazos de tareas los hace ECS, sin cortar el servicio.
+
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas ni pasa
 del doble. El ASG admite una instancia más que el máximo de tareas, y eso alcanza para ese doble
@@ -147,7 +205,48 @@ avanzado (Amazon Inspector) revisa además las dependencias de Go, pero se cobra
 No bloquea el deploy: informa, y como los tags son inmutables cada versión queda escaneada
 una sola vez, la vez que se sube.
 
-## 4. Secretos y cifrado
+## 4. Datos
+
+RDS PostgreSQL 18 Multi-AZ (`db.t3.micro`) en las subredes de `data`, sin acceso público,
+cifrada con la clave del proyecto y con 7 días de backups automáticos. La standby está en la
+otra AZ, con réplica sincrónica y failover automático sin cambiar el endpoint. No es una
+réplica de lectura: no atiende tráfico, y nunca se autoriza un pago contra datos con retraso.
+
+**Por qué relacional y no DynamoDB.** El invariante del ledger es transaccional: una
+transferencia son dos asientos y dos saldos que se escriben juntos o no se escribe ninguno, con
+integridad referencial entre cuentas, órdenes y asientos. Validar fondos necesita un bloqueo de
+fila: la liquidación hace `SELECT … FOR UPDATE` sobre `saldos` mientras valida y escribe, y toma
+los bloqueos en orden de id de cuenta, para que dos transferencias cruzadas no se traben entre
+sí. La idempotencia es una restricción `UNIQUE (tipo, idempotency_key)` en `ordenes`: un
+reintento con la misma clave devuelve la orden que ya existe en lugar de liquidar dos veces. Y
+los extractos y el cierre son agregaciones por rango de fechas sobre entidades relacionadas. En
+DynamoDB todo eso habría que construirlo en la aplicación, con escrituras condicionales y
+reintentos.
+
+**Modelo del saldo**, en tres partes:
+
+- `asientos`: la fuente de verdad, de sólo anexado y particionada por mes
+  (`PARTITION BY RANGE (periodo)`).
+- `saldos`: el saldo vigente de cada cuenta, que se actualiza en la misma transacción que los
+  asientos. Es lo que se lee y se bloquea, así que validar fondos cuesta lo mismo con diez
+  asientos que con diez millones.
+- `saldos_apertura`: el saldo de cada cuenta al corte de cada archivado, para seguir derivando
+  el saldo cuando los meses viejos ya no están en la base. La API expone el saldo vigente y el
+  derivado y muestra si coinciden.
+
+**Archivado.** El archivador toma un período de la tabla `tareas` (`FOR UPDATE SKIP LOCKED`),
+hace `DETACH PARTITION` de ese mes, lo sube a S3 como
+`transaction-history/periodo=AAAA-MM/asientos.ndjson.gz` (un prefijo estilo Hive, que se puede
+consultar con Athena) y borra la partición. No hay un `DELETE` masivo que genere WAL ni compita
+por bloqueos con la liquidación. El extracto de un mes archivado lo arma la API leyendo ese
+objeto.
+
+**Conexiones.** Cada tarea abre como máximo `pool_max_conns` conexiones, que va en la
+`DB_URL`. Se calcula repartiendo `db_max_connections` (60 por defecto, por debajo de las ~80 de
+una `db.t3.micro`) como si los dos servicios estuvieran a la vez en el doble de su máximo de
+tareas, que es el pico de un deploy.
+
+## 5. Secretos y cifrado
 
 Las claves que usan los binarios (la `DB_URL` con la password de la base, la de admin, la del
 mock, la del proveedor y la del webhook) no van en la task definition, donde cualquiera con
@@ -167,6 +266,18 @@ El client secret de Cognito está en un tercer secreto, `ledger/callback`. La La
 callback sólo recibe su ARN y lo lee con el SDK una vez por instancia; si la lectura falla no
 queda guardado y el próximo login reintenta. La Lambda no corre en la VPC, así que no necesita
 endpoint.
+
+Así se sigue lo que pide la clase de seguridad, no dejar secretos en el código, el repositorio
+ni las variables de entorno de la configuración: el valor no está en el repo ni en la task
+definition, sólo en Secrets Manager. El contenedor sí lo recibe como variable de entorno al
+arrancar, porque es lo que lee el binario; queda en la memoria del proceso, no en ningún lugar
+visible desde la consola.
+
+**Sin rotación automática.** Secrets Manager puede rotar solo, pero eso necesita una Lambda de
+rotación con su rol, y AWS Academy no deja crear roles. Rotar hoy es cambiar el valor en
+Terraform: el `version-id` de la referencia cambia y ECS reemplaza las tareas. Una rotación
+hecha a mano fuera de Terraform no llegaría a las tareas, porque siguen apuntando a la versión
+fija.
 
 Los secretos se crean con `recovery_window_in_days = 0`: Secrets Manager reserva por defecto
 el nombre 30 días después de borrarlo, y el siguiente Deploy fallaría por nombre duplicado.
@@ -192,7 +303,7 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
   explícitamente para no depender de lo que permita su política de IAM en el laboratorio) y
   CloudWatch Logs, limitado a los log groups de la cuenta. El permiso de la cuenta delega en
   IAM, y la política de IAM del `LabRole` es amplia: en la práctica también puede administrar y
-  borrar la clave (ver [Trade-offs](#7-trade-offs)).
+  borrar la clave (ver [Trade-offs](#9-trade-offs)).
 - **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
   antes se sigue pudiendo leer.
 - **Retiro:** deshabilitar la clave corta de una vez el acceso a todos esos datos. Al
@@ -201,7 +312,7 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
 El bucket del frontend queda con AES256: lo leen usuarios anónimos por el endpoint de website,
 y un anónimo no puede tener permiso sobre una clave de KMS.
 
-## 5. Login con Cognito
+## 6. Login con Cognito
 
 Cognito sólo acepta callbacks HTTPS y el frontend se sirve por HTTP desde S3, así que el
 callback pasa por API Gateway y una Lambda:
@@ -228,7 +339,29 @@ HTTP.
 `apps/web/`. Los datos para la API (`issuer`, `client_id`) y el `user_pool_id` para crear
 usuarios por CLI están en `terraform output cognito`.
 
-## 6. Estado
+## 7. Frontend
+
+Sitio estático en el bucket con website hosting: HTML, CSS y módulos de JavaScript sin
+dependencias ni paso de build, que Terraform sube archivo por archivo junto con `config.json`.
+Las decisiones que importan son de seguridad:
+
+- **El token y las claves de operación viven en `sessionStorage`**, no en `localStorage`:
+  duran lo que dura la pestaña y no quedan en el disco. Las claves de administración y del mock
+  se borran al cerrar o perder la sesión, así que quien use la misma computadora después no
+  hereda el acceso.
+- **La pestaña Operación sólo aparece en modo operación**, con la clave de administración
+  cargada. Ocultarla es comodidad, no control: el control lo hace la API, que exige
+  `X-Admin-Key` en `/admin/*` y la compara en tiempo constante.
+- **Sin `innerHTML`**: todo el texto que viene de la API se escribe con `textContent`, así que
+  un alias con HTML se muestra como texto y no se ejecuta.
+- **El saldo de bienvenida lo fija la API** (`SALDO_BIENVENIDA_CENTAVOS`), no el cliente.
+- **Cada envío, retiro e ingreso lleva su `Idempotency-Key`**, la misma mientras no cambien los
+  datos: si la red se corta después de que la API liquidó, reintentar no cobra dos veces.
+
+Las operaciones que el proveedor no confirma enseguida (un `202`) se muestran como "en
+revisión", no como éxito ni como error, y el comprobante ofrece actualizar el estado.
+
+## 8. Estado
 
 El state vive en S3, en `ledger-tfstate-<cuenta>-us-east-1-an`, con la key
 `tp3/terraform.tfstate`. Tiene que ser remoto porque Deploy y Destroy corren en GitHub Actions:
@@ -244,8 +377,9 @@ nuevo y Destroy no tendría qué destruir.
 - **El nombre lleva la cuenta**, en el namespace regional de la cuenta (`-an`), igual que los
   otros dos buckets: el mismo código despliega en cualquier cuenta sin editar nada, y nadie
   más puede ocupar ese nombre.
-- **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). No hace
-  falta una tabla de DynamoDB. El `plan` de los pull requests corre con `-lock=false`: no
+- **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). El
+  esquema clásico, S3 más una tabla de DynamoDB para el lock, quedó deprecado desde Terraform
+  1.11 a favor de éste, así que no hace falta crear ni pagar esa tabla. El `plan` de los pull requests corre con `-lock=false`: no
   escribe el state, y así no espera a un deploy en curso.
 - **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
   quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
@@ -259,7 +393,7 @@ nuevo y Destroy no tendría qué destruir.
   website, que no leen el object lock. `make destroy` los vacía, con todas sus versiones, y los
   borra junto con el del state.
 
-## 7. Trade-offs
+## 9. Trade-offs
 
 - **Un solo NAT**, en la primera AZ. Ahorra el costo de uno por AZ; si esa AZ se cae, las
   tareas de la API de la otra siguen atendiendo y llegando a la base y a los servicios de AWS
@@ -267,6 +401,11 @@ nuevo y Destroy no tendría qué destruir.
   tareas que ya tenían las claves siguen validando sesiones; una tarea nueva no puede hasta que
   vuelva el NAT. Con el proveedor por defecto, el mock de la propia API, las operaciones con el
   proveedor tampoco se completan, porque la API lo llama por el NLB.
+- **Siete interface endpoints**, en las dos AZ: unos USD 0,14 por hora, tres veces el NAT.
+  Son el precio de que el archivador no tenga ninguna salida a Internet: la alternativa barata
+  es darle ruta al NAT, y entonces el único componente que borra datos del ledger podría
+  mandarlos a cualquier lado. También dejan las instancias de la API independientes del NAT
+  para hablar con ECS, ECR y Logs.
 - **La API en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
   certificado. El access token y las claves de operación (`X-Admin-Key`, `X-Mock-Key`) viajan
   en claro entre el navegador y el NLB; el login, en cambio, es HTTPS de punta a punta (Hosted
@@ -277,10 +416,11 @@ nuevo y Destroy no tendría qué destruir.
   del laboratorio, no unos mínimos por componente. Por eso la separación de custodios de la
   clave KMS no es real: en una cuenta propia cada servicio tendría su rol y la política de la
   clave nombraría sólo a los que la necesitan.
-- **Los buckets del proyecto quedan fuera del state** (ver [Estado](#6-estado)). Terraform no
+- **Los buckets del proyecto quedan fuera del state** (ver [Estado](#8-estado)). Terraform no
   se entera si alguien borra uno a mano, `terraform apply` sin `make apply` falla porque no
-  existen, y el nombre se arma en dos lugares: el script y los módulos, con `project_name =
-  "ledger"`.
+  existen, y el nombre se arma en dos lugares: el script y los módulos. Para que no se
+  desalineen, el `Makefile` define `PROJECT` una sola vez y se lo pasa a los dos (al script y a
+  Terraform como `TF_VAR_project_name`).
 - **RDS Multi-AZ** aunque duplique el tiempo del primer apply: la base es lo único con estado y
   sigue disponible si se cae una zona. `db_multi_az = false` la deja en una sola AZ para probar.
 - **La base no sobrevive a Destroy**: sin deletion protection ni snapshot final, porque Destroy
@@ -296,7 +436,15 @@ nuevo y Destroy no tendría qué destruir.
   habilitarla sólo sumaría una vía de login que nadie usa.
 - tfsec marca estas decisiones; cada una está ignorada en el código con el motivo al lado.
 
-## 8. Requisitos del TP
+## 10. Correcciones de entregas anteriores
+
+| Entrega | Corrección | Qué se hizo |
+|---|---|---|
+| TP1 | Avanzar con la propuesta 2, el núcleo transaccional elástico | Es este sistema |
+| TP1 | Un sistema financiero asíncrono obliga a lidiar con concurrencia y consistencia eventual | La concurrencia se resuelve en la base: bloqueo de fila sobre `saldos` en orden de id, idempotencia por restricción única y transacciones que escriben asientos y saldos juntos (ver [Datos](#4-datos)). La liquidación en sí es síncrona, dentro del request: el caso que fija la latencia es un pago con una persona esperando, y una cola agregaba más espera que la que ahorraba. Lo que sí es asíncrono es lo que depende de afuera: los egresos que el proveedor no confirma quedan en duda y se resuelven por consulta, y el archivado corre aparte, por horario |
+| TP2 | Por la naturaleza de la aplicación, usar un network load balancer y no un application load balancer | NLB con targets `ip`. La justificación (latencia, picos sin calentamiento, conexiones largas, ISO 8583 sobre TCP, TLS de punta a punta e IP fija) está en [Entrada: por qué un NLB](#entrada-por-qué-un-nlb). La API escala por CPU, porque la métrica de requests por target es sólo del ALB |
+
+## 11. Requisitos del TP
 
 | Requisito | Dónde en este repo |
 |---|---|
@@ -306,3 +454,5 @@ nuevo y Destroy no tendría qué destruir.
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |
 | Pipeline (init, validate, plan, apply) | Workflows **Terraform** y **Deploy** en [`.github/workflows`](.github/workflows) |
+| Diagrama actualizado | [`img/arquitectura.png`](img/arquitectura.png), con su fuente editable en [`img/arquitectura.drawio`](img/arquitectura.drawio) |
+| Correcciones previas | [Sección 10](#10-correcciones-de-entregas-anteriores) |

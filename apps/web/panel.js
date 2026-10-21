@@ -1,7 +1,8 @@
 import {
   pedir, exigir, estado, consultarSalud, verCinta, alAnotar, limpiarCinta, mensajeDeError,
 } from './api.js';
-import { el, enPesos, fechaCompleta, cuando, avisar, periodoActual } from './formato.js';
+import { el, enPesos, fechaCompleta, cuando, avisar, periodoActual, vacio } from './formato.js';
+import { icono } from './iconos.js';
 
 export async function panel(hoja) {
   const salud = tarjeta('Estado del despliegue');
@@ -14,8 +15,19 @@ export async function panel(hoja) {
   const reinicio = tarjeta('Reiniciar los datos de la demo');
   const cinta = tarjetaCinta();
 
-  hoja.append(el('div', { clase: 'panel' }, salud.caja, huellas.caja, proveedor.caja,
-    pedidos.caja, avisos.caja, contable.caja, extracto.caja, reinicio.caja, cinta));
+  hoja.append(
+    el('div', {},
+      el('h1', { texto: 'Operación' }),
+      el('p', { clase: 'encabezado-sub', texto: 'Herramientas para quien opera el despliegue: actúan sobre todas las cuentas.' })),
+    el('div', { clase: 'operacion-banda', role: 'note' },
+      icono('llave', 20),
+      el('p', { texto: 'Estás en modo operación. Las claves se borran al cerrar sesión.' }),
+      el('button', {
+        clase: 'boton boton-chico', texto: 'Salir del modo operación',
+        onclick: () => document.dispatchEvent(new CustomEvent('nucleo:salir-operacion')),
+      })),
+    el('div', { clase: 'panel' }, salud.caja, huellas.caja, proveedor.caja,
+      pedidos.caja, avisos.caja, contable.caja, extracto.caja, reinicio.caja, cinta));
 
   await Promise.all([
     pintarSalud(salud),
@@ -67,14 +79,11 @@ function error(cuerpo, err) {
 function faltaClave(cuerpo, cual) {
   if (estado[cual]) return false;
 
-  const abierto = cual === 'admin' ? 'ADMIN_ABIERTO=1' : 'MOCK_ABIERTO=1';
-
-  cuerpo.replaceChildren(el('div', { clase: 'dato' },
-    el('p', { clase: 'vacio', texto: `Esta tarjeta usa la clave de ${cual}, que no está cargada.` }),
-    el('p', { clase: 'vacio', texto: `Si el server corre con ${abierto}, alcanza cargar cualquier valor.` }),
+  const nombre = cual === 'admin' ? 'de administración' : 'del proveedor simulado';
+  cuerpo.replaceChildren(vacio('llave', `Falta la clave ${nombre}`, 'Cargala en Modo operación para usar esta tarjeta.',
     el('button', {
       clase: 'boton boton-chico',
-      texto: 'Cargar claves',
+      texto: 'Cargar clave',
       onclick: () => document.dispatchEvent(new CustomEvent('nucleo:abrir-claves')),
     })));
   return true;
@@ -352,38 +361,36 @@ async function pintarExtracto({ cuerpo }) {
     salidaExportacion);
 }
 
-// Confirmación en dos pasos y no un confirm(): un diálogo nativo bloquea la página y no se puede
-// automatizar. El segundo botón se desarma solo para que no quede listo para siempre.
+// Hay que escribir BORRAR y no alcanza un clic: es irreversible y un confirm() nativo bloquea la
+// página y no se puede automatizar.
 async function pintarReinicio({ cuerpo }) {
   if (faltaClave(cuerpo, 'admin')) return;
 
   const salida = el('div');
+  const palabra = el('input', { placeholder: 'BORRAR', autocomplete: 'off', 'aria-label': 'Escribí BORRAR para confirmar' });
 
-  const ejecutar = accion('Confirmar: borrar todo', async () => {
+  const ejecutar = accion('Borrar todos los datos', async () => {
     const res = await exigir('POST', '/admin/reinicio', {
       admin: true,
       cuerpo: { confirmar: 'BORRAR TODO' },
     });
     const total = Object.values(res.borradas).reduce((a, b) => a + b, 0);
     avisar(`${total} filas borradas. Las cuatro cuentas internas quedan.`);
-    ejecutar.hidden = true;
+    palabra.value = '';
+    // accion() rehabilita el botón al terminar: se vuelve a bloquear hasta que escriban de nuevo.
+    setTimeout(() => { ejecutar.disabled = true; }, 0);
     salida.replaceChildren(el('pre', { texto: JSON.stringify(res, null, 2) }));
-  });
-  ejecutar.hidden = true;
-
-  const pedirConfirmacion = el('button', {
-    clase: 'boton boton-chico',
-    texto: 'Borrar todos los datos',
-    onclick: () => {
-      ejecutar.hidden = false;
-      setTimeout(() => { ejecutar.hidden = true; }, 10000);
-    },
-  });
+  }, 'boton boton-peligro boton-chico');
+  ejecutar.disabled = true;
+  palabra.addEventListener('input', () => { ejecutar.disabled = palabra.value.trim() !== 'BORRAR'; });
 
   cuerpo.replaceChildren(
     el('p', { clase: 'ayuda', texto: 'Borra cuentas, órdenes, asientos, avisos y el estado del mock. El esquema y las cuatro cuentas internas del ledger quedan: sus ids están cacheados en el proceso y recrearlas lo rompería.' }),
     el('div', { style: 'height:.75rem' }),
-    el('div', { clase: 'fila-botones' }, pedirConfirmacion, ejecutar),
+    el('label', { clase: 'campo', style: 'max-width:18rem' },
+      el('span', { clase: 'campo-rotulo', texto: 'Para confirmar, escribí BORRAR' }), palabra),
+    el('div', { style: 'height:.75rem' }),
+    el('div', { clase: 'fila-botones' }, ejecutar),
     salida);
 }
 

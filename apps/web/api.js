@@ -7,14 +7,19 @@ const LLAVES = {
   mock: 'nucleo.mock',
 };
 
-// localStorage tira en ventanas privadas o con las cookies bloqueadas: mejor no recordar la
-// sesión que no arrancar.
+// sessionStorage y no localStorage: el token y las claves de operación viven lo que vive la
+// pestaña, no quedan en el disco para el próximo que use la computadora. Si Cognito todavía
+// tiene la sesión abierta, volver a entrar es un clic. Puede tirar en ventanas privadas o con
+// las cookies bloqueadas: mejor no recordar la sesión que no arrancar.
 function leer(llave) {
-  try { return localStorage.getItem(llave) || ''; } catch { return ''; }
+  try { return sessionStorage.getItem(llave) || ''; } catch { return ''; }
 }
 function guardar(llave, valor) {
-  try { valor ? localStorage.setItem(llave, valor) : localStorage.removeItem(llave); } catch { /* sin persistencia */ }
+  try { valor ? sessionStorage.setItem(llave, valor) : sessionStorage.removeItem(llave); } catch { /* sin persistencia */ }
 }
+
+// Versiones anteriores guardaban todo en localStorage: se limpia lo que haya quedado.
+try { Object.values(LLAVES).forEach((llave) => localStorage.removeItem(llave)); } catch { /* sin persistencia */ }
 
 function leerSesion() {
   try {
@@ -70,18 +75,23 @@ export function fijarCuenta(cuenta) {
   estado.cuenta = cuenta || null;
 }
 
+// Las claves de operación se van con la sesión: el que entre después en esta pestaña no hereda
+// el acceso de administrador.
 export function cerrarSesion() {
   estado.token = '';
   estado.idToken = '';
   estado.expira = 0;
   estado.cuenta = null;
   guardar(LLAVES.sesion, '');
+  fijarClaves({ admin: '', mock: '' });
 }
 
 export function fijarClaves({ admin, mock }) {
   if (admin !== undefined) { estado.admin = admin; guardar(LLAVES.admin, admin); }
   if (mock !== undefined) { estado.mock = mock; guardar(LLAVES.mock, mock); }
 }
+
+export function modoOperacion() { return Boolean(estado.admin); }
 
 export function hayToken() { return Boolean(estado.token) && estado.expira > Date.now(); }
 export function haySesion() { return hayToken() && Boolean(estado.cuenta); }
@@ -177,7 +187,7 @@ export async function pedir(metodo, ruta, opciones = {}) {
 function sinClave(metodo, ruta, cual) {
   const datos = {
     codigo: 'sin_clave',
-    mensaje: `Falta la clave de ${cual}: cargala en «Claves de operación»`,
+    mensaje: `Falta la clave de ${cual}: cargala en «Modo operación»`,
   };
   anotar({ id: ++contador, metodo, ruta, codigo: 0, ms: 0, datos });
   return { ok: false, codigo: 0, datos };

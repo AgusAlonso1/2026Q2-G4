@@ -1,3 +1,5 @@
+import { icono } from './iconos.js';
+
 // Con textContent un alias que contenga "<" se ve como texto y no se ejecuta: por eso el()
 // no acepta html.
 export function el(etiqueta, props = {}, ...hijos) {
@@ -70,6 +72,11 @@ export function cuando(iso) {
   return mismoDia ? horaCorta.format(f) : diaCorto.format(f);
 }
 
+export function hora(iso) {
+  const f = new Date(iso);
+  return Number.isNaN(f.getTime()) ? '' : horaCorta.format(f);
+}
+
 export function fechaCompleta(iso) {
   if (!iso) return '';
   const f = new Date(iso);
@@ -92,8 +99,10 @@ export function nombreDelPeriodo(periodo) {
 
 export function avisar(texto, malo = false) {
   const caja = document.getElementById('avisos');
-  const nodo = el('div', { clase: `aviso${malo ? ' aviso-malo' : ''}`, texto });
+  const nodo = el('div', { clase: `aviso${malo ? ' aviso-malo' : ''}`, role: malo ? 'alert' : 'status' },
+    icono(malo ? 'alerta' : 'ok', 18), el('span', { texto }));
   caja.append(nodo);
+  setTimeout(() => nodo.classList.add('aviso-sale'), 3400);
   setTimeout(() => nodo.remove(), 3800);
 }
 
@@ -119,4 +128,75 @@ export function desenlace(estado) {
 export function iniciales(alias) {
   return String(alias || '?').replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(' ')
     .slice(0, 2).map((p) => p[0] || '').join('') || '?';
+}
+
+// El mismo alias siempre da el mismo color: la persona se reconoce en la lista sin leer.
+export function colorDe(texto) {
+  let h = 0;
+  for (const c of String(texto || '')) h = (h * 31 + c.codePointAt(0)) % 360;
+  return h;
+}
+
+export function avatar(alias, tam = 'normal') {
+  return el('span', {
+    clase: `avatar avatar-${tam}`,
+    style: `--tono:${colorDe(alias)}`,
+    texto: iniciales(alias).toUpperCase(),
+    'aria-hidden': 'true',
+  });
+}
+
+const diaLargo = new Intl.DateTimeFormat('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
+
+// Para agrupar la actividad: "Hoy", "Ayer" o "martes 14 de octubre".
+export function etiquetaDia(iso) {
+  const f = new Date(iso);
+  if (Number.isNaN(f.getTime())) return '';
+  const dia = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diferencia = Math.round((dia(new Date()) - dia(f)) / 86400000);
+  if (diferencia === 0) return 'Hoy';
+  if (diferencia === 1) return 'Ayer';
+  const texto = diaLargo.format(f);
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
+}
+
+// El sitio se sirve por HTTP y navigator.clipboard sólo existe en contextos seguros: si no está,
+// se copia con un textarea temporal, que anda en cualquier página.
+export async function copiar(texto) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(texto);
+      return true;
+    }
+  } catch { /* sigue con el respaldo */ }
+  const area = el('textarea', { value: texto, readOnly: true, style: 'position:fixed;opacity:0' });
+  document.body.append(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  area.remove();
+  return ok;
+}
+
+export function botonCopiar(texto, rotulo = 'Copiar') {
+  return el('button', {
+    type: 'button', clase: 'boton-icono', title: rotulo, 'aria-label': rotulo,
+    onclick: async () => avisar((await copiar(texto)) ? 'Copiado' : 'No se pudo copiar', false),
+  }, icono('copiar', 16));
+}
+
+// Mientras llega la respuesta: barras grises con la forma de lo que va a aparecer.
+export function esqueleto(filas = 3) {
+  return el('div', { clase: 'esqueleto', 'aria-busy': 'true', 'aria-label': 'Cargando' },
+    ...Array.from({ length: filas }, () => el('div', { clase: 'esqueleto-fila' },
+      el('span', { clase: 'esqueleto-circulo' }),
+      el('span', { clase: 'esqueleto-lineas' }, el('span'), el('span')))));
+}
+
+export function vacio(nombreIcono, titulo, detalle = '', ...acciones) {
+  return el('div', { clase: 'vacio' },
+    el('span', { clase: 'vacio-icono' }, icono(nombreIcono, 26)),
+    el('p', { clase: 'vacio-titulo', texto: titulo }),
+    detalle ? el('p', { clase: 'vacio-detalle', texto: detalle }) : null,
+    acciones.length ? el('div', { clase: 'fila-botones' }, ...acciones) : null);
 }

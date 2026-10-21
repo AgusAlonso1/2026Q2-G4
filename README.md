@@ -68,6 +68,11 @@ secrets del paso 1.
 
 En el repositorio, **Settings → Secrets and variables → Actions → New repository secret**:
 
+![Settings → Secrets and variables → Actions: los tres secrets de AWS y dos opcionales](img/secrets.png)
+
+En la captura, el recuadro sólido marca los obligatorios y el punteado dos de los opcionales
+(ver abajo).
+
 | Secret | Obligatorio | Para qué |
 |---|---|---|
 | `AWS_ACCESS_KEY_ID` | Sí | Access key del laboratorio de AWS Academy |
@@ -95,6 +100,8 @@ o como variables de entorno `TF_VAR_*` antes de `make plan`.
 
 ### 2. Workflows configurados
 
+![Pestaña Actions con los workflows Deploy, Destroy y Terraform](img/workflows.png)
+
 | Workflow | Cuándo corre / confirmación | Qué hace |
 |---|---|---|
 | **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
@@ -119,9 +126,14 @@ generados con terraform-docs, así que no debería encontrar cambios.
 
 1. Con los secrets cargados: **Actions → Deploy → Run workflow** → rama `main` → escribir
    `deploy`. Mergear no despliega nada.
+
+   ![Workflow Deploy: Run workflow con la confirmación deploy](img/deploy.png)
+
 2. Esperar el run en verde. El primer apply tarda más que los siguientes: RDS Multi-AZ sola
    lleva varios minutos.
 3. Abrir el resumen del run: tiene `website_url` (frontend), `api_url` y `login_url`.
+
+   ![Resumen del run de Deploy con las URL del despliegue](img/resumen.png)
 
 ### 4. Probar
 
@@ -134,10 +146,14 @@ curl <api_url>/health
 
 Después, entrar por `website_url`:
 
+![Pantalla de ingreso del sitio](img/login.png)
+
 1. **Continuar** lleva a la Hosted UI de Cognito. La primera vez, **Sign up** con un email y una
    contraseña (8 caracteres, con minúsculas y números). Cognito manda un código a ese email; al
    cargarlo se vuelve al sitio con la sesión iniciada. El registro está abierto, así que no hace
    falta crear usuarios antes.
+
+   ![Hosted UI de Cognito: Sign in y Sign up](img/cognito.png)
 
    Si el código no llega (Cognito manda los emails con su remitente por defecto, que tiene un
    límite diario), el usuario se confirma por CLI. El `user_pool_id` está en `terraform output
@@ -151,6 +167,11 @@ Después, entrar por `website_url`:
 3. La billetera: **Inicio**, **Enviar** (a otra cuenta), **Ingresar** (*Ya hice la
    transferencia* simula el depósito del banco), **Retirar** (egreso por el proveedor) y
    **Actividad**, con el resumen de cada mes: el de un mes archivado lo arma la API desde S3.
+
+   ![Inicio de la billetera: saldo y últimos movimientos](img/inicio.png)
+
+   ![Actividad: movimientos y resumen del mes](img/actividad.png)
+
 4. **Operación** muestra la salud y qué tarea atendió, el proveedor activo, el cierre contable,
    el archivado, el extracto y la exportación, y la cinta de llamadas a la API con su código y
    su latencia. Las tarjetas de `/admin/*` y del mock piden las claves (menú de la cuenta →
@@ -161,9 +182,13 @@ Después, entrar por `website_url`:
      | jq '{ADMIN_API_KEY, MOCK_API_KEY}'
    ```
 
+   ![Operación: estado del despliegue, base y tarea que atendió el pedido](img/operacion.png)
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
+
+![Workflow Destroy: Run workflow con la confirmación destroy](img/destroy.png)
 
 Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
 [Estado](ARCHITECTURE.md#6-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y

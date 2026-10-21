@@ -75,6 +75,8 @@ module "capacity" {
   security_group_id    = module.security_groups.ids.host
   max_size             = each.value.max_count + 1
   target_capacity      = each.value.target_capacity
+
+  depends_on = [aws_vpc_endpoint.interface, module.security_groups]
 }
 
 module "service" {

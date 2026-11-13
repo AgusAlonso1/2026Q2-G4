@@ -1,7 +1,6 @@
 package webhook
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -9,28 +8,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const (
-	EstadoPendiente = "pendiente"
-	EstadoEntregada = "entregada"
-	EstadoFallida   = "fallida"
-)
+const CabeceraFirma = "X-Ledger-Signature"
 
-const (
-	CabeceraFirma = "X-Ledger-Signature"
-	tiempoLimite  = 5 * time.Second
-	factorEspera  = 2
-)
-
-const ventanaReintento = "15 minutes"
+const tiempoLimite = 10 * time.Second
 
 type Aviso struct {
+	EventoID      string `json:"evento_id,omitempty"`
 	OrdenID       int64  `json:"orden_id"`
 	Tipo          string `json:"tipo"`
 	Estado        string `json:"estado"`
@@ -41,35 +34,42 @@ type Aviso struct {
 	Referencia    string `json:"referencia,omitempty"`
 }
 
+type Evento struct {
+	Aviso
+	Titulares *Titulares `json:"titulares,omitempty"`
+}
+
+type Titulares struct {
+	Origen  string `json:"origen,omitempty"`
+	Destino string `json:"destino,omitempty"`
+}
+
+type publicador interface {
+	Publish(ctx context.Context, in *sns.PublishInput, opts ...func(*sns.Options)) (*sns.PublishOutput, error)
+}
+
 type Notificador struct {
-	pool     *pgxpool.Pool
-	cliente  *http.Client
-	url      string
-	secreto  string
-	intentos int
-	espera   time.Duration
+	pool  *pgxpool.Pool
+	sns   publicador
+	topic string
 
 	pendientes sync.WaitGroup
 }
 
-func Nuevo(pool *pgxpool.Pool, url, secreto string, intentos int, espera time.Duration) *Notificador {
-	if intentos <= 0 {
-		intentos = 3
+func Nuevo(ctx context.Context, pool *pgxpool.Pool, region, topic string) (*Notificador, error) {
+	if topic == "" {
+		return &Notificador{}, nil
 	}
-	if espera <= 0 {
-		espera = 200 * time.Millisecond
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("cargar credenciales de AWS: %w", err)
 	}
-	return &Notificador{
-		pool:     pool,
-		cliente:  &http.Client{Timeout: tiempoLimite},
-		url:      url,
-		secreto:  secreto,
-		intentos: intentos,
-		espera:   espera,
-	}
+	return &Notificador{pool: pool, sns: sns.NewFromConfig(cfg), topic: topic}, nil
 }
 
-func (n *Notificador) Habilitado() bool { return n != nil && n.url != "" }
+func (n *Notificador) Habilitado() bool { return n != nil && n.topic != "" }
+
+func (n *Notificador) Topic() string { return n.topic }
 
 func (n *Notificador) Notificar(a Aviso) {
 	if !n.Habilitado() {
@@ -78,7 +78,11 @@ func (n *Notificador) Notificar(a Aviso) {
 	n.pendientes.Add(1)
 	go func() {
 		defer n.pendientes.Done()
-		n.entregar(context.Background(), a)
+		ctx, cancelar := context.WithTimeout(context.Background(), tiempoLimite)
+		defer cancelar()
+		if err := n.publicar(ctx, a); err != nil {
+			slog.Error("publicar evento", "orden", a.OrdenID, "estado", a.Estado, "error", err)
+		}
 	}()
 }
 
@@ -94,102 +98,46 @@ func (n *Notificador) Esperar(ctx context.Context) {
 	}
 }
 
-func (n *Notificador) entregar(ctx context.Context, a Aviso) {
+func (n *Notificador) publicar(ctx context.Context, a Aviso) error {
+	a.EventoID = fmt.Sprintf("%d:%s", a.OrdenID, a.Estado)
+	ev := Evento{Aviso: a, Titulares: n.titulares(ctx, a)}
 
-	tag, err := n.pool.Exec(ctx, `
-		INSERT INTO entregas_webhook (orden_id, estado) VALUES ($1, $2)
-		ON CONFLICT (orden_id) DO UPDATE
-		SET estado = EXCLUDED.estado, actualizada_en = now()
-		WHERE entregas_webhook.estado <> $3
-		  AND entregas_webhook.actualizada_en < now() - $4::interval`,
-		a.OrdenID, EstadoPendiente, EstadoEntregada, ventanaReintento)
-	if err != nil {
-		slog.Error("reservar entrega de webhook", "orden", a.OrdenID, "error", err)
-		return
-	}
-	if tag.RowsAffected() == 0 {
-
-		return
-	}
-
-	cuerpo, err := json.Marshal(a)
-	if err != nil {
-		n.registrar(ctx, a.OrdenID, EstadoFallida, 0, err.Error())
-		return
-	}
-	firma := Firmar(cuerpo, n.secreto)
-
-	var ultimo error
-	for intento := 1; intento <= n.intentos; intento++ {
-		ultimo = n.enviar(ctx, cuerpo, firma)
-		if ultimo == nil {
-			n.registrar(ctx, a.OrdenID, EstadoEntregada, intento, "")
-			return
-		}
-		if intento < n.intentos {
-			select {
-			case <-time.After(n.esperaDe(intento)):
-			case <-ctx.Done():
-				n.registrar(ctx, a.OrdenID, EstadoFallida, intento, ctx.Err().Error())
-				return
-			}
-		}
-	}
-
-	slog.Warn("webhook agotado", "orden", a.OrdenID, "intentos", n.intentos, "error", ultimo)
-	n.registrar(ctx, a.OrdenID, EstadoFallida, n.intentos, ultimo.Error())
-}
-
-func (n *Notificador) enviar(ctx context.Context, cuerpo []byte, firma string) error {
-	pedido, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(cuerpo))
+	cuerpo, err := json.Marshal(ev)
 	if err != nil {
 		return err
 	}
-	pedido.Header.Set("Content-Type", "application/json")
-	pedido.Header.Set(CabeceraFirma, firma)
-
-	resp, err := n.cliente.Do(pedido)
+	_, err = n.sns.Publish(ctx, &sns.PublishInput{
+		TopicArn: aws.String(n.topic),
+		Message:  aws.String(string(cuerpo)),
+		MessageAttributes: map[string]types.MessageAttributeValue{
+			"tipo":   {DataType: aws.String("String"), StringValue: aws.String(a.Tipo)},
+			"estado": {DataType: aws.String("String"), StringValue: aws.String(a.Estado)},
+		},
+	})
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("el webhook respondio %d", resp.StatusCode)
-	}
+	slog.Info("evento publicado", "evento", a.EventoID)
 	return nil
 }
 
-func (n *Notificador) esperaDe(intento int) time.Duration {
-	espera := n.espera
-	for i := 1; i < intento; i++ {
-		espera *= factorEspera
+func (n *Notificador) titulares(ctx context.Context, a Aviso) *Titulares {
+	if n.pool == nil {
+		return nil
 	}
-	return espera
-}
-
-func (n *Notificador) registrar(ctx context.Context, ordenID int64, estado string, intentos int, motivo string) {
-	var err error
-	if motivo == "" {
-		_, err = n.pool.Exec(ctx, `
-			INSERT INTO entregas_webhook (orden_id, estado, intentos)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (orden_id) DO UPDATE
-			SET estado = EXCLUDED.estado, intentos = EXCLUDED.intentos,
-			    ultimo_error = NULL, actualizada_en = now()`, ordenID, estado, intentos)
-	} else {
-		_, err = n.pool.Exec(ctx, `
-			INSERT INTO entregas_webhook (orden_id, estado, intentos, ultimo_error)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (orden_id) DO UPDATE
-			SET estado = EXCLUDED.estado, intentos = EXCLUDED.intentos,
-			    ultimo_error = EXCLUDED.ultimo_error, actualizada_en = now()`,
-			ordenID, estado, intentos, motivo)
-	}
+	var t Titulares
+	err := n.pool.QueryRow(ctx, `
+		SELECT coalesce((SELECT titular FROM cuentas WHERE id = $1), ''),
+		       coalesce((SELECT titular FROM cuentas WHERE id = $2), '')`,
+		a.OrigenID, a.DestinoID).Scan(&t.Origen, &t.Destino)
 	if err != nil {
-
-		slog.Error("registrar entrega de webhook", "orden", ordenID, "error", err)
+		slog.Warn("leer titulares del evento", "orden", a.OrdenID, "error", err)
+		return nil
 	}
+	if t.Origen == "" && t.Destino == "" {
+		return nil
+	}
+	return &t
 }
 
 func Firmar(cuerpo []byte, secreto string) string {

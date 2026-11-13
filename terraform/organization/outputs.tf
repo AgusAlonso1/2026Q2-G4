@@ -58,3 +58,13 @@ output "ecs_cluster_name" {
   description = "Cluster de ECS de la API y el archivador."
   value       = aws_ecs_cluster.this.name
 }
+
+output "events" {
+  description = "Eventos del ledger: topic donde publica la API, cola y DLQ del webhook, topic de alertas."
+  value = {
+    topic_arn         = module.events.topic_arn
+    alerts_topic_arn  = module.events.alerts_topic_arn
+    webhook_queue_url = module.events.webhook_queue_url
+    webhook_dlq_url   = module.events.webhook_dlq_url
+  }
+}

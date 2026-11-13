@@ -28,6 +28,7 @@ env:
   TF_VAR_mock_api_key: ${{ secrets.MOCK_API_KEY }}
   TF_VAR_webhook_url: ${{ vars.WEBHOOK_URL }}
   TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+  TF_VAR_notification_emails: ${{ vars.NOTIFICATION_EMAILS }}
 
 defaults:
   run:

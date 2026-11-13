@@ -51,7 +51,7 @@ locals {
         COGNITO_CLIENT_ID = module.auth.client_id
         CORS_ORIGENES     = module.website.website_url
         PROVEEDOR_URL     = coalesce(var.proveedor_url, "${local.api_url}/servicio-mock")
-        WEBHOOK_URL       = var.webhook_url
+        SNS_TOPIC_ARN     = module.events.topic_arn
       }
     }
     archive = {
@@ -81,7 +81,10 @@ locals {
   db_url       = "${module.database.url}&pool_max_conns=${local.db_pool_size}"
 
   # Aparte de services: son sensibles, y for_each no acepta valores sensibles.
-  mock_api_key = coalesce(var.mock_api_key, random_password.this["mock"].result)
+  mock_api_key   = coalesce(var.mock_api_key, random_password.this["mock"].result)
+  webhook_secret = coalesce(var.webhook_secret, random_password.this["webhook"].result)
+
+  notification_emails = compact([for e in split(",", var.notification_emails) : trimspace(e)])
 
   secret_values = {
     api = {
@@ -89,7 +92,7 @@ locals {
       ADMIN_API_KEY     = random_password.this["admin"].result
       MOCK_API_KEY      = local.mock_api_key
       PROVEEDOR_API_KEY = coalesce(var.proveedor_api_key, local.mock_api_key)
-      WEBHOOK_SECRET    = coalesce(var.webhook_secret, random_password.this["webhook"].result)
+      WEBHOOK_SECRET    = local.webhook_secret
     }
     archive = {
       DB_URL = local.db_url

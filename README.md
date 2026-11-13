@@ -88,6 +88,17 @@ En la captura, el recuadro sólido marca los obligatorios y el punteado dos de l
 Los tres salen de **AWS Details → AWS CLI** en el laboratorio y vencen con la sesión: hay que
 volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
+#### Emails de notificación
+
+En la pestaña **Variables**, `NOTIFICATION_EMAILS`: emails separados por comas (por ejemplo
+`ana@gmail.com,beto@itba.edu.ar`). Se verifican en SES, el primero es el remitente de los mails a
+los titulares, y todos reciben las alertas de operación. Después del primer Deploy, a cada
+dirección le llegan dos mails que hay que confirmar: el de **Amazon SES** (sin él, SES no le
+manda ni manda desde ella, porque está en sandbox) y el de **AWS Notifications** (la suscripción
+a las alertas). Si queda vacía, no se mandan mails.
+
+Para que un titular reciba los mails, su email de Cognito tiene que estar en esa lista.
+
 #### Opcional: conectar el despliegue con el de otro equipo
 
 Sin nada de esto, el despliegue funciona solo: los ingresos y egresos van al proveedor simulado
@@ -96,8 +107,8 @@ dos conexiones posibles con otro despliegue, independientes entre sí:
 
 - **Proveedor.** Un equipo manda sus ingresos y egresos al `/servicio-mock` del otro, en vez de
   al suyo. El que hace de proveedor no cambia nada de su lado; sólo comparte su clave del mock.
-- **Webhook.** Cada vez que una orden termina, la API le manda un aviso firmado (cabecera
-  `X-Ledger-Signature`) a `<api_url del otro>/webhooks/recibidos`. El que recibe verifica la
+- **Webhook.** Cada vez que una orden termina, la API publica un evento en SNS y una Lambda le
+  manda un aviso firmado (cabecera `X-Ledger-Signature`) a `<api_url del otro>/webhooks/recibidos`. El que recibe verifica la
   firma con el mismo secreto, y el aviso aparece en su pestaña *Operación*.
 
 Los valores se cargan en la misma pantalla que los de AWS. Los workflows Deploy y Terraform se
@@ -108,7 +119,7 @@ los pasan a Terraform como `TF_VAR_*`:
 | `MOCK_API_KEY` | Secrets | La clave que exige **mi** `/servicio-mock`. Si otro equipo me usa de proveedor, se la paso | Se genera una, distinta en cada despliegue desde cero |
 | `PROVEEDOR_URL` | Variables | Adónde mando **mis** ingresos y egresos: `<api_url del otro>/servicio-mock` | Mi propio `/servicio-mock` |
 | `PROVEEDOR_API_KEY` | Secrets | La clave del proveedor al que llamo: el `MOCK_API_KEY` del otro | La de mi propio mock |
-| `WEBHOOK_URL` | Variables | Adónde aviso **mis** órdenes terminadas: `<api_url del otro>/webhooks/recibidos` | No aviso a nadie |
+| `WEBHOOK_URL` | Variables | Adónde la Lambda del webhook avisa **mis** órdenes terminadas: `<api_url del otro>/webhooks/recibidos` | La Lambda descarta los avisos |
 | `WEBHOOK_SECRET` | Secrets | Con qué firmo los avisos que mando y verifico los que recibo. Tiene que ser igual en los dos despliegues | Se genera uno |
 
 Por ejemplo, si el equipo B usa al equipo A de proveedor y los dos se avisan las órdenes:
@@ -129,8 +140,8 @@ que el orden es:
    desplegar.
 2. Los dos corren **Deploy** sin URL y se pasan la `api_url` que queda en el resumen del run.
 3. Cada uno carga `PROVEEDOR_URL` y/o `WEBHOOK_URL` con la `api_url` del otro y vuelve a correr
-   **Deploy**. Este segundo Deploy actualiza el servicio de ECS, pero no el NLB, así que la
-   `api_url` no cambia.
+   **Deploy**. Este segundo Deploy no toca el NLB, así que la `api_url` no cambia. La
+   `WEBHOOK_URL` sólo actualiza la Lambda del webhook, sin reemplazar las tareas de la API.
 
 Para el proveedor, el segundo Deploy se puede evitar: la tarjeta de proveedor de *Operación*
 (o `POST /admin/proveedor`) cambia la URL en caliente, y el cambio queda guardado en la base
@@ -260,6 +271,12 @@ Después, entrar por `website_url`:
 
    ![Operación: estado del despliegue, base y tarea que atendió el pedido](img/operacion.png)
 
+5. **Notificaciones.** Una transferencia a otra cuenta le manda un mail al destinatario (si su
+   email está en `NOTIFICATION_EMAILS`), y con `WEBHOOK_URL` cargada el aviso aparece en
+   *Avisos recibidos* del otro despliegue. Para ver los eventos sin otro equipo, apuntar
+   `WEBHOOK_URL` a la propia API (`<api_url>/webhooks/recibidos`). Lo que hace cada Lambda queda
+   en `/aws/lambda/ledger-webhook` y `/aws/lambda/ledger-mailer` de CloudWatch Logs.
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
@@ -267,7 +284,7 @@ Después, entrar por `website_url`:
 ![Workflow Destroy: Run workflow con la confirmación destroy](img/destroy.png)
 
 Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
-[Estado](ARCHITECTURE.md#8-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
+[Estado](ARCHITECTURE.md#9-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
 el log group que crea Container Insights (`/aws/ecs/containerinsights/ledger-cluster/performance`,
 con retención de un día); ninguno de los dos molesta al próximo Deploy.
 
@@ -312,7 +329,7 @@ script.
 
 **El bucket del state** se crea aparte por otro motivo: el backend S3 tiene que existir antes de
 `terraform init`, así que no puede ser un recurso del mismo state (ver
-[Estado](ARCHITECTURE.md#8-estado)).
+[Estado](ARCHITECTURE.md#9-estado)).
 
 `make destroy` (y el workflow **Destroy**) borra los tres buckets con todas sus versiones, pero
 sólo cuando `terraform destroy` dejó el state vacío. En una cuenta sin ese SCP, los dos buckets
@@ -409,6 +426,20 @@ access log JSON por request a su propio log group.
 
 ---
 
+### [`modules/events`](terraform/modules/events)
+
+Topic SNS `ledger-events`, donde la API publica cada orden terminada, y sus dos consumidores:
+una cola SQS con DLQ que lee la Lambda del webhook ([`apps/webhook`](apps/webhook)), y la
+Lambda de mails ([`apps/mailer`](apps/mailer)) suscripta directo, con filtro por `tipo` y
+`estado`, que manda por SES. Un topic de alertas con suscripciones de email recibe la alarma de
+la DLQ y los mails fallidos (ver [Eventos y notificaciones](ARCHITECTURE.md#7-eventos-y-notificaciones)).
+
+**Recursos:** `aws_sns_topic.events`, `aws_sns_topic.alerts`, `aws_sqs_queue.webhook` y
+`webhook_dlq`, `aws_lambda_function.this` (webhook y mailer), `aws_lambda_event_source_mapping.webhook`,
+`aws_ses_email_identity.this`, `aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
+
+---
+
 ### [`modules/database`](terraform/modules/database)
 
 RDS PostgreSQL Multi-AZ en las subredes de `data`, cifrada con la clave KMS del proyecto y sin
@@ -500,11 +531,13 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/website/main.tf` | Un objeto de S3 por archivo del frontend |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
+| `for_each` | `modules/events/main.tf` | Las dos Lambdas (webhook y mailer) con su zip y su log group, y una identidad de SES y una suscripción de alertas por email |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
+| `depends_on` | `modules/events/main.tf` | La suscripción de SNS a la cola se crea después de la política que deja escribir a SNS |
 | `depends_on` | `modules/storage/main.tf`, `modules/website/main.tf` | La política de cada bucket se aplica después de su bloqueo de acceso público |
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
@@ -545,7 +578,7 @@ el `plan`, no a mitad del apply.
 .
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los que ya traía el repo
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
-├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
+├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, eventos, state y trade-offs
 ├── img/                   # diagrama de arquitectura (.png y .drawio) y capturas de los pasos
 ├── scripts/
 │   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
@@ -558,12 +591,15 @@ el `plan`, no a mitad del apply.
 │       ├── database/
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
+│       ├── events/        # SNS, SQS con DLQ, Lambdas del webhook y de mails, SES y alertas
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/
     ├── ledger/            # backend en Go: binarios api y archivador, imagen con su Dockerfile
     ├── web/               # frontend estático (lo sube modules/website)
-    └── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
+    ├── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
+    ├── webhook/           # Lambda que entrega los avisos del webhook desde la cola SQS
+    └── mailer/            # Lambda que manda los mails a los titulares por SES
 ```
 
 Arquitectura y decisiones de diseño: [`ARCHITECTURE.md`](ARCHITECTURE.md).

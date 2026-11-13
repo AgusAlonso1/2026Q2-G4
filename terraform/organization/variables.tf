@@ -108,7 +108,7 @@ variable "proveedor_api_key" {
 }
 
 variable "webhook_url" {
-  description = "Adonde la API avisa las órdenes terminadas. Vacía: no avisa."
+  description = "Adonde la Lambda del webhook entrega las órdenes terminadas. Vacía: no avisa."
   type        = string
   default     = ""
 }
@@ -135,4 +135,10 @@ variable "archive_schedule" {
     condition     = alltrue([for a in values(var.archive_schedule) : contains([0, 1], a.tasks)])
     error_message = "El archivador va de 0 a 1 tarea: tasks tiene que ser 0 o 1."
   }
+}
+
+variable "notification_emails" {
+  description = "Emails separados por comas. Se verifican en SES (el primero es el remitente de los mails a los titulares) y reciben las alertas de operación."
+  type        = string
+  default     = ""
 }

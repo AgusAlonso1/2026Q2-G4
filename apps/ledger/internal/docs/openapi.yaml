@@ -117,6 +117,9 @@ paths:
 
         Un aviso con firma inválida **se guarda igual** y se contesta 401: es lo único que
         queda para mostrar que alguien mandó algo que no salió de un emisor legítimo.
+
+        Los avisos salen de una cola SQS, que entrega al menos una vez: un `evento_id` que ya
+        llegó con firma válida devuelve el aviso guardado, sin registrarlo de nuevo.
       parameters:
         - name: X-Ledger-Signature
           in: header
@@ -130,6 +133,7 @@ paths:
             schema:
               type: object
               properties:
+                evento_id: { type: string, description: "`<orden_id>:<estado>`. Mismo evento, mismo id." }
                 orden_id: { type: integer, format: int64 }
                 tipo: { type: string }
                 estado: { type: string }

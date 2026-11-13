@@ -1,5 +1,5 @@
 resource "aws_kms_key" "this" {
-  description             = "${local.name_prefix}: secretos, archivo del ledger, RDS, ECR y logs"
+  description             = "${local.name_prefix}: secretos, archivo del ledger, RDS, ECR, logs, topics y colas"
   enable_key_rotation     = true
   deletion_window_in_days = 7 # el mínimo: después de un destroy la clave no queda un mes en la cuenta
 
@@ -20,6 +20,15 @@ resource "aws_kms_key" "this" {
         Effect    = "Allow"
         Principal = { AWS = data.aws_iam_role.lab.arn }
         Action    = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:ReEncrypt*", "kms:DescribeKey"]
+        Resource  = "*"
+      },
+      {
+        # SNS escribe en la cola cifrada del webhook y CloudWatch publica las alarmas en el
+        # topic cifrado de alertas. Sin esto los mensajes se pierden sin ningún error a la vista.
+        Sid       = "SnsYAlarmas"
+        Effect    = "Allow"
+        Principal = { Service = ["sns.amazonaws.com", "cloudwatch.amazonaws.com"] }
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey*"]
         Resource  = "*"
       },
       {

@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 
@@ -31,47 +30,6 @@ func base(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("migrar: %v", err)
 	}
 	return pool
-}
-
-func TestElEventoLlevaLosSubDeLosTitulares(t *testing.T) {
-	pool := base(t)
-	ctx := context.Background()
-
-	var origen, destino, sinTitular int64
-	if err := pool.QueryRow(ctx, `
-		WITH c AS (
-			INSERT INTO cuentas (alias, tipo, titular) VALUES
-				('ana', 'usuario', 'sub-ana'), ('beto', 'usuario', 'sub-beto'), ('caja', 'usuario', NULL)
-			RETURNING id, alias)
-		SELECT (SELECT id FROM c WHERE alias = 'ana'), (SELECT id FROM c WHERE alias = 'beto'),
-		       (SELECT id FROM c WHERE alias = 'caja')`).Scan(&origen, &destino, &sinTitular); err != nil {
-		t.Fatal(err)
-	}
-
-	falso := &snsFalso{}
-	n := &Notificador{pool: pool, sns: falso, topic: "arn"}
-	n.Notificar(Aviso{OrdenID: 1, Tipo: "transferencia", Estado: "liquidada", OrigenID: &origen, DestinoID: &destino})
-	n.Notificar(Aviso{OrdenID: 2, Tipo: "ingreso", Estado: "atribuida", DestinoID: &destino})
-	n.Notificar(Aviso{OrdenID: 3, Tipo: "ingreso", Estado: "atribuida", DestinoID: &sinTitular})
-	n.Esperar(ctx)
-
-	titulares := map[int64]*Titulares{}
-	for _, in := range falso.recibidos {
-		var ev Evento
-		if err := json.Unmarshal([]byte(*in.Message), &ev); err != nil {
-			t.Fatal(err)
-		}
-		titulares[ev.OrdenID] = ev.Titulares
-	}
-	if got := titulares[1]; got == nil || got.Origen != "sub-ana" || got.Destino != "sub-beto" {
-		t.Fatalf("transferencia: titulares = %+v", got)
-	}
-	if got := titulares[2]; got == nil || got.Origen != "" || got.Destino != "sub-beto" {
-		t.Fatalf("ingreso: titulares = %+v", got)
-	}
-	if got := titulares[3]; got != nil {
-		t.Fatalf("una cuenta sin titular no lleva titulares: %+v", got)
-	}
 }
 
 func TestElReceptorDescartaLosDuplicados(t *testing.T) {

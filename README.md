@@ -91,13 +91,10 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 #### Emails de notificación
 
 En la pestaña **Variables**, `NOTIFICATION_EMAILS`: emails separados por comas (por ejemplo
-`ana@gmail.com,beto@itba.edu.ar`). Se verifican en SES, el primero es el remitente de los mails a
-los titulares, y todos reciben las alertas de operación. Después del primer Deploy, a cada
-dirección le llegan dos mails que hay que confirmar: el de **Amazon SES** (sin él, SES no le
-manda ni manda desde ella, porque está en sandbox) y el de **AWS Notifications** (la suscripción
-a las alertas). Si queda vacía, no se mandan mails.
-
-Para que un titular reciba los mails, su email de Cognito tiene que estar en esa lista.
+`ana@gmail.com,beto@itba.edu.ar`). Cada uno se suscribe al topic SNS de alertas de operación
+(la alarma de la DLQ del webhook). Después del primer Deploy, a cada dirección le llega un mail
+de **AWS Notifications** con el link para confirmar la suscripción. Si queda vacía, no hay
+alertas por mail.
 
 #### Opcional: conectar el despliegue con el de otro equipo
 
@@ -271,11 +268,10 @@ Después, entrar por `website_url`:
 
    ![Operación: estado del despliegue, base y tarea que atendió el pedido](img/operacion.png)
 
-5. **Notificaciones.** Una transferencia a otra cuenta le manda un mail al destinatario (si su
-   email está en `NOTIFICATION_EMAILS`), y con `WEBHOOK_URL` cargada el aviso aparece en
-   *Avisos recibidos* del otro despliegue. Para ver los eventos sin otro equipo, apuntar
-   `WEBHOOK_URL` a la propia API (`<api_url>/webhooks/recibidos`). Lo que hace cada Lambda queda
-   en `/aws/lambda/ledger-webhook` y `/aws/lambda/ledger-mailer` de CloudWatch Logs.
+5. **Eventos.** Con `WEBHOOK_URL` cargada, cada orden terminada aparece en *Avisos recibidos*
+   del otro despliegue. Para verlos sin otro equipo, apuntar `WEBHOOK_URL` a la propia API
+   (`<api_url>/webhooks/recibidos`). Lo que hace la Lambda queda en `/aws/lambda/ledger-webhook`
+   de CloudWatch Logs.
 
 ### 5. Destruir al terminar
 
@@ -428,15 +424,14 @@ access log JSON por request a su propio log group.
 
 ### [`modules/events`](terraform/modules/events)
 
-Topic SNS `ledger-events`, donde la API publica cada orden terminada, y sus dos consumidores:
-una cola SQS con DLQ que lee la Lambda del webhook ([`apps/webhook`](apps/webhook)), y la
-Lambda de mails ([`apps/mailer`](apps/mailer)) suscripta directo, con filtro por `tipo` y
-`estado`, que manda por SES. Un topic de alertas con suscripciones de email recibe la alarma de
-la DLQ y los mails fallidos (ver [Eventos y notificaciones](ARCHITECTURE.md#7-eventos-y-notificaciones)).
+Topic SNS `ledger-events`, donde la API publica cada orden terminada, y una cola SQS con DLQ
+suscripta a él, que lee la Lambda del webhook ([`apps/webhook`](apps/webhook)). Un topic de
+alertas con suscripciones de email recibe la alarma de la DLQ (ver
+[Eventos y notificaciones](ARCHITECTURE.md#7-eventos-y-notificaciones)).
 
 **Recursos:** `aws_sns_topic.events`, `aws_sns_topic.alerts`, `aws_sqs_queue.webhook` y
-`webhook_dlq`, `aws_lambda_function.this` (webhook y mailer), `aws_lambda_event_source_mapping.webhook`,
-`aws_ses_email_identity.this`, `aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
+`webhook_dlq`, `aws_lambda_function.webhook`, `aws_lambda_event_source_mapping.webhook`,
+`aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
 
 ---
 
@@ -531,7 +526,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/website/main.tf` | Un objeto de S3 por archivo del frontend |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
-| `for_each` | `modules/events/main.tf` | Las dos Lambdas (webhook y mailer) con su zip y su log group, y una identidad de SES y una suscripción de alertas por email |
+| `for_each` | `modules/events/main.tf` | Una suscripción de alertas por cada email de `notification_emails` |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
@@ -591,15 +586,14 @@ el `plan`, no a mitad del apply.
 │       ├── database/
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
-│       ├── events/        # SNS, SQS con DLQ, Lambdas del webhook y de mails, SES y alertas
+│       ├── events/        # SNS, SQS con DLQ, Lambda del webhook y alertas
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/
     ├── ledger/            # backend en Go: binarios api y archivador, imagen con su Dockerfile
     ├── web/               # frontend estático (lo sube modules/website)
     ├── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
-    ├── webhook/           # Lambda que entrega los avisos del webhook desde la cola SQS
-    └── mailer/            # Lambda que manda los mails a los titulares por SES
+    └── webhook/           # Lambda que entrega los avisos del webhook desde la cola SQS
 ```
 
 Arquitectura y decisiones de diseño: [`ARCHITECTURE.md`](ARCHITECTURE.md).

@@ -138,7 +138,7 @@ variable "archive_schedule" {
 }
 
 variable "notification_emails" {
-  description = "Emails separados por comas. Se verifican en SES (el primero es el remitente de los mails a los titulares) y reciben las alertas de operación."
+  description = "Emails separados por comas que se suscriben a las alertas de operación (SNS). Cada uno tiene que confirmar la suscripción."
   type        = string
   default     = ""
 }

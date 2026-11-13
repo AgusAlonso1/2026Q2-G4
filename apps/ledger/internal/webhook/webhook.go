@@ -15,7 +15,6 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/aws/aws-sdk-go-v2/service/sns/types"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const CabeceraFirma = "X-Ledger-Signature"
@@ -34,29 +33,18 @@ type Aviso struct {
 	Referencia    string `json:"referencia,omitempty"`
 }
 
-type Evento struct {
-	Aviso
-	Titulares *Titulares `json:"titulares,omitempty"`
-}
-
-type Titulares struct {
-	Origen  string `json:"origen,omitempty"`
-	Destino string `json:"destino,omitempty"`
-}
-
 type publicador interface {
 	Publish(ctx context.Context, in *sns.PublishInput, opts ...func(*sns.Options)) (*sns.PublishOutput, error)
 }
 
 type Notificador struct {
-	pool  *pgxpool.Pool
 	sns   publicador
 	topic string
 
 	pendientes sync.WaitGroup
 }
 
-func Nuevo(ctx context.Context, pool *pgxpool.Pool, region, topic string) (*Notificador, error) {
+func Nuevo(ctx context.Context, region, topic string) (*Notificador, error) {
 	if topic == "" {
 		return &Notificador{}, nil
 	}
@@ -64,7 +52,7 @@ func Nuevo(ctx context.Context, pool *pgxpool.Pool, region, topic string) (*Noti
 	if err != nil {
 		return nil, fmt.Errorf("cargar credenciales de AWS: %w", err)
 	}
-	return &Notificador{pool: pool, sns: sns.NewFromConfig(cfg), topic: topic}, nil
+	return &Notificador{sns: sns.NewFromConfig(cfg), topic: topic}, nil
 }
 
 func (n *Notificador) Habilitado() bool { return n != nil && n.topic != "" }
@@ -100,9 +88,7 @@ func (n *Notificador) Esperar(ctx context.Context) {
 
 func (n *Notificador) publicar(ctx context.Context, a Aviso) error {
 	a.EventoID = fmt.Sprintf("%d:%s", a.OrdenID, a.Estado)
-	ev := Evento{Aviso: a, Titulares: n.titulares(ctx, a)}
-
-	cuerpo, err := json.Marshal(ev)
+	cuerpo, err := json.Marshal(a)
 	if err != nil {
 		return err
 	}
@@ -119,25 +105,6 @@ func (n *Notificador) publicar(ctx context.Context, a Aviso) error {
 	}
 	slog.Info("evento publicado", "evento", a.EventoID)
 	return nil
-}
-
-func (n *Notificador) titulares(ctx context.Context, a Aviso) *Titulares {
-	if n.pool == nil {
-		return nil
-	}
-	var t Titulares
-	err := n.pool.QueryRow(ctx, `
-		SELECT coalesce((SELECT titular FROM cuentas WHERE id = $1), ''),
-		       coalesce((SELECT titular FROM cuentas WHERE id = $2), '')`,
-		a.OrigenID, a.DestinoID).Scan(&t.Origen, &t.Destino)
-	if err != nil {
-		slog.Warn("leer titulares del evento", "orden", a.OrdenID, "error", err)
-		return nil
-	}
-	if t.Origen == "" && t.Destino == "" {
-		return nil
-	}
-	return &t
 }
 
 func Firmar(cuerpo []byte, secreto string) string {

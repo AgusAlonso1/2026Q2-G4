@@ -4,7 +4,7 @@ output "topic_arn" {
 }
 
 output "alerts_topic_arn" {
-  description = "Topic de alertas de operación: DLQ del webhook y mails que no se pudieron mandar."
+  description = "Topic de alertas de operación: la alarma de la DLQ del webhook."
   value       = aws_sns_topic.alerts.arn
 }
 

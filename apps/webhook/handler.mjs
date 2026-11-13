@@ -14,13 +14,8 @@ const leerSecreto = async () => {
 
 export const firmar = (cuerpo, clave) => createHmac("sha256", clave).update(cuerpo).digest("hex");
 
-const avisoPublico = (evento) => {
-  const { titulares, ...aviso } = evento;
-  return aviso;
-};
-
 const entregar = async (record, clave) => {
-  const cuerpo = JSON.stringify(avisoPublico(JSON.parse(record.body)));
+  const cuerpo = record.body;
   const res = await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", [CABECERA_FIRMA]: firmar(cuerpo, clave) },

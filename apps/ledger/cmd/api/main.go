@@ -83,7 +83,7 @@ func correr() error {
 		return err
 	}
 
-	notif, err := webhook.Nuevo(arranque, pool, cfg.Region, cfg.SNSTopicARN)
+	notif, err := webhook.Nuevo(arranque, cfg.Region, cfg.SNSTopicARN)
 	if err != nil {
 		return err
 	}

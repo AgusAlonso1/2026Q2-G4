@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 
@@ -51,7 +50,7 @@ func TestFirmaCompatibleConLaLambda(t *testing.T) {
 }
 
 func TestSinTopicNoPublica(t *testing.T) {
-	n, err := Nuevo(context.Background(), nil, "us-east-1", "")
+	n, err := Nuevo(context.Background(), "us-east-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +80,10 @@ func TestPublicaElEventoConSusAtributos(t *testing.T) {
 		t.Fatalf("topic equivocado: %s", *in.TopicArn)
 	}
 	if *in.MessageAttributes["tipo"].StringValue != "transferencia" || *in.MessageAttributes["estado"].StringValue != "liquidada" {
-		t.Fatalf("faltan los atributos que usa el filtro del mailer: %+v", in.MessageAttributes)
+		t.Fatalf("faltan los atributos para filtrar suscripciones: %+v", in.MessageAttributes)
 	}
 
-	var ev Evento
+	var ev Aviso
 	if err := json.Unmarshal([]byte(*in.Message), &ev); err != nil {
 		t.Fatal(err)
 	}
@@ -100,16 +99,4 @@ func TestUnErrorDeSNSNoFrenaNada(t *testing.T) {
 	n := &Notificador{sns: &snsFalso{err: errors.New("sin red")}, topic: "arn"}
 	n.Notificar(Aviso{OrdenID: 1, Tipo: "egreso", Estado: "acreditada"})
 	n.Esperar(context.Background())
-}
-
-func TestElAvisoPublicoNoLlevaTitulares(t *testing.T) {
-	ev := Evento{Aviso: Aviso{OrdenID: 1}, Titulares: &Titulares{Destino: "sub-b"}}
-	conTitulares, _ := json.Marshal(ev)
-	if !strings.Contains(string(conTitulares), `"titulares":{"destino":"sub-b"}`) {
-		t.Fatalf("el evento tiene que llevar los titulares: %s", conTitulares)
-	}
-	sinTitulares, _ := json.Marshal(ev.Aviso)
-	if strings.Contains(string(sinTitulares), "titulares") {
-		t.Fatalf("el aviso no tiene que llevar los titulares: %s", sinTitulares)
-	}
 }

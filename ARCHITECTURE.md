@@ -346,34 +346,31 @@ usuarios por CLI están en `terraform output cognito`.
 
 Cuando una orden llega a un estado terminal, la API publica un evento en el topic SNS
 `ledger-events` ([`modules/events`](terraform/modules/events)) y responde sin esperar. El topic
-desacopla a la API de quién escucha, y lo reparte a dos consumidores:
+desacopla a la API de quién escucha: hoy lo consume el webhook, y sumar otro consumidor es
+sumar una suscripción, sin tocar la API.
 
 | Consumidor | Camino | Si falla |
 |---|---|---|
 | Webhook | SNS → SQS `ledger-webhook` → Lambda ([`apps/webhook`](apps/webhook)) → POST firmado | SQS reintenta 5 veces; después va a la DLQ, que dispara una alarma |
-| Mail al titular | SNS → Lambda ([`apps/mailer`](apps/mailer)) → SES | Lambda reintenta 2 veces; después va al topic de alertas |
 
-- **Por qué el webhook lleva cola y el mail no.** La cola protege al consumidor que puede
-  fallar. El webhook es un contrato con otro sistema, cuyo endpoint puede estar caído un rato:
-  la cola guarda el aviso y lo reintenta. El mail es una cortesía, porque el dato ya está en la
-  app: alcanzan los reintentos de Lambda.
+- **Por qué lleva cola.** El webhook es un contrato con otro sistema, cuyo endpoint puede estar
+  caído un rato: la cola guarda el aviso y lo reintenta, y lo que agota los reintentos queda en
+  la DLQ para revisarlo.
 - **Qué resuelve.** Antes el webhook salía de una goroutine dentro de la tarea de la API: si ECS
   la apagaba (scale-in o deploy), los avisos en curso quedaban colgados. Ahora la entrega no
   depende de la tarea, y cambiar `webhook_url` actualiza la Lambda sin reemplazar tareas.
 - **Contrato del aviso.** El mismo de antes (JSON firmado con HMAC en `X-Ledger-Signature`),
   más `evento_id = <orden_id>:<estado>`. SQS entrega al menos una vez, así que el receptor
   descarta los `evento_id` repetidos, sólo si la firma es válida: si no, una firma falsa podría
-  ocupar el id de un aviso real. El evento interno lleva además el `sub` de Cognito de los
-  titulares: el mailer busca con él el email, y la Lambda del webhook lo saca antes de firmar.
-- **Filtro.** La suscripción del mailer filtra por los atributos `tipo` y `estado`:
-  transferencias liquidadas, ingresos atribuidos y egresos acreditados, devueltos o rechazados.
-- **Alertas.** Un topic aparte, `ledger-alerts`, manda por email la alarma de la DLQ y los
-  mails que no se pudieron mandar a las direcciones de `notification_emails`.
+  ocupar el id de un aviso real. El mensaje lleva `tipo` y `estado` como atributos, para que
+  una suscripción nueva pueda filtrar sin leer el cuerpo.
+- **Alertas.** Un topic aparte, `ledger-alerts`, manda por email la alarma de la DLQ a las
+  direcciones de `notification_emails` (suscripciones de SNS que cada una confirma).
 - **Red y cifrado.** La API publica por el interface endpoint de SNS, sin pasar por el NAT. Los
   topics y la cola se cifran con la clave del proyecto, cuya política habilita a SNS (escribe
   en la cola) y a CloudWatch (publica las alarmas en el topic).
-- **SES en sandbox.** Sólo manda a direcciones verificadas: Terraform verifica las de
-  `notification_emails` y la primera es el remitente.
+- **Sin mails a los titulares.** Se descartó mandarlos por SES porque AWS Academy no habilita
+  SES: el rol del laboratorio no tiene permisos de SES (`ses:GetAccount` da `AccessDenied`).
 
 ## 8. Frontend
 
@@ -496,4 +493,4 @@ nuevo y Destroy no tendría qué destruir.
 | Pipeline (init, validate, plan, apply) | Workflows **Terraform** y **Deploy** en [`.github/workflows`](.github/workflows) |
 | Diagrama actualizado | [`img/arquitectura.png`](img/arquitectura.png), con su fuente editable en [`img/arquitectura.drawio`](img/arquitectura.drawio) |
 | Correcciones previas | [Sección 11](#11-correcciones-de-entregas-anteriores) |
-| Al menos un SQS o SNS (TP4) | [Eventos y notificaciones](#7-eventos-y-notificaciones): SNS, SQS con DLQ, Lambda y SES |
+| Al menos un SQS o SNS (TP4) | [Eventos y notificaciones](#7-eventos-y-notificaciones): SNS, SQS con DLQ y Lambda |

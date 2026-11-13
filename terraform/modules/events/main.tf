@@ -1,36 +1,3 @@
-locals {
-  sender = try(var.notification_emails[0], "")
-
-  functions = {
-    webhook = {
-      description = "Lee la cola del webhook, firma cada aviso y lo entrega"
-      source_dir  = var.webhook_source_dir
-      concurrency = -1
-      environment = {
-        WEBHOOK_URL        = var.webhook_url
-        WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.webhook.arn
-      }
-    }
-    mailer = {
-      description = "Recibe los eventos del topic y le manda un mail al titular por SES"
-      source_dir  = var.mailer_source_dir
-      concurrency = var.mailer_concurrency
-      environment = {
-        USER_POOL_ID = var.user_pool_id
-        SENDER       = local.sender
-      }
-    }
-  }
-
-  mailer_filter = {
-    "$or" = [
-      { tipo = ["transferencia"], estado = ["liquidada"] },
-      { tipo = ["egreso"], estado = ["acreditada", "devuelta", "rechazada"] },
-      { tipo = ["ingreso"], estado = ["atribuida"] },
-    ]
-  }
-}
-
 resource "aws_sns_topic" "events" {
   name              = "${var.name_prefix}-events"
   kms_master_key_id = var.kms_key_arn
@@ -80,41 +47,9 @@ resource "aws_sns_topic_subscription" "webhook" {
 
 resource "aws_lambda_event_source_mapping" "webhook" {
   event_source_arn        = aws_sqs_queue.webhook.arn
-  function_name           = aws_lambda_function.this["webhook"].arn
+  function_name           = aws_lambda_function.webhook.arn
   batch_size              = 10
   function_response_types = ["ReportBatchItemFailures"]
-}
-
-resource "aws_sns_topic_subscription" "mailer" {
-  topic_arn     = aws_sns_topic.events.arn
-  protocol      = "lambda"
-  endpoint      = aws_lambda_function.this["mailer"].arn
-  filter_policy = jsonencode(local.mailer_filter)
-}
-
-resource "aws_lambda_permission" "mailer" {
-  statement_id  = "AllowEventsTopicInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.this["mailer"].function_name
-  principal     = "sns.amazonaws.com"
-  source_arn    = aws_sns_topic.events.arn
-}
-
-resource "aws_lambda_function_event_invoke_config" "mailer" {
-  function_name          = aws_lambda_function.this["mailer"].function_name
-  maximum_retry_attempts = 2
-
-  destination_config {
-    on_failure {
-      destination = aws_sns_topic.alerts.arn
-    }
-  }
-}
-
-resource "aws_ses_email_identity" "this" {
-  for_each = toset(var.notification_emails)
-
-  email = each.value
 }
 
 resource "aws_secretsmanager_secret" "webhook" {
@@ -129,40 +64,48 @@ resource "aws_secretsmanager_secret_version" "webhook" {
   secret_string = var.webhook_secret
 }
 
-data "archive_file" "this" {
-  for_each = local.functions
-
+data "archive_file" "webhook" {
   type        = "zip"
-  source_dir  = each.value.source_dir
-  output_path = "${path.root}/.build/${var.name_prefix}-${each.key}.zip"
+  source_dir  = var.webhook_source_dir
+  output_path = "${path.root}/.build/${var.name_prefix}-webhook.zip"
 }
 
-resource "aws_cloudwatch_log_group" "this" {
-  for_each = local.functions
-
-  name              = "/aws/lambda/${var.name_prefix}-${each.key}"
+resource "aws_cloudwatch_log_group" "webhook" {
+  name              = "/aws/lambda/${var.name_prefix}-webhook"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
 }
 
-resource "aws_lambda_function" "this" {
-  for_each = local.functions
-
-  function_name                  = "${var.name_prefix}-${each.key}"
-  description                    = each.value.description
-  role                           = var.lambda_role_arn
-  runtime                        = var.lambda_runtime
-  handler                        = "handler.handler"
-  filename                       = data.archive_file.this[each.key].output_path
-  source_code_hash               = data.archive_file.this[each.key].output_base64sha256
-  timeout                        = var.lambda_timeout
-  reserved_concurrent_executions = each.value.concurrency
+resource "aws_lambda_function" "webhook" {
+  function_name    = "${var.name_prefix}-webhook"
+  description      = "Lee la cola del webhook, firma cada aviso y lo entrega"
+  role             = var.lambda_role_arn
+  runtime          = var.lambda_runtime
+  handler          = "handler.handler"
+  filename         = data.archive_file.webhook.output_path
+  source_code_hash = data.archive_file.webhook.output_base64sha256
+  timeout          = var.lambda_timeout
 
   environment {
-    variables = each.value.environment
+    variables = {
+      WEBHOOK_URL        = var.webhook_url
+      WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.webhook.arn
+    }
   }
 
-  depends_on = [aws_cloudwatch_log_group.this]
+  depends_on = [aws_cloudwatch_log_group.webhook]
+}
+
+# Antes eran dos Lambdas con for_each (webhook y mailer). Sin esto, Terraform borraría y
+# volvería a crear la del webhook y su log group en los despliegues que ya existen.
+moved {
+  from = aws_lambda_function.this["webhook"]
+  to   = aws_lambda_function.webhook
+}
+
+moved {
+  from = aws_cloudwatch_log_group.this["webhook"]
+  to   = aws_cloudwatch_log_group.webhook
 }
 
 resource "aws_sns_topic" "alerts" {

@@ -430,7 +430,7 @@ alertas con suscripciones de email recibe la alarma de la DLQ (ver
 [Eventos y notificaciones](ARCHITECTURE.md#7-eventos-y-notificaciones)).
 
 **Recursos:** `aws_sns_topic.events`, `aws_sns_topic.alerts`, `aws_sqs_queue.webhook` y
-`webhook_dlq`, `aws_lambda_function.webhook`, `aws_lambda_event_source_mapping.webhook`,
+`webhook_dlq`, `aws_lambda_function.this` (webhook), `aws_lambda_event_source_mapping.webhook`,
 `aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
 
 ---
@@ -526,7 +526,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/website/main.tf` | Un objeto de S3 por archivo del frontend |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
-| `for_each` | `modules/events/main.tf` | Una suscripción de alertas por cada email de `notification_emails` |
+| `for_each` | `modules/events/main.tf` | La Lambda del webhook con su zip y su log group, y una suscripción de alertas por cada email de `notification_emails` |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |

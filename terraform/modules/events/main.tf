@@ -1,3 +1,19 @@
+locals {
+  # Un mapa, aunque hoy haya una sola Lambda: así las direcciones del state siguen siendo
+  # this["webhook"] (antes había también un mailer). Pasarlas a un recurso suelto pide un
+  # bloque moved, y Terraform no acepta moved con el apply -target de `make imagen`.
+  functions = {
+    webhook = {
+      description = "Lee la cola del webhook, firma cada aviso y lo entrega"
+      source_dir  = var.webhook_source_dir
+      environment = {
+        WEBHOOK_URL        = var.webhook_url
+        WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.webhook.arn
+      }
+    }
+  }
+}
+
 resource "aws_sns_topic" "events" {
   name              = "${var.name_prefix}-events"
   kms_master_key_id = var.kms_key_arn
@@ -47,7 +63,7 @@ resource "aws_sns_topic_subscription" "webhook" {
 
 resource "aws_lambda_event_source_mapping" "webhook" {
   event_source_arn        = aws_sqs_queue.webhook.arn
-  function_name           = aws_lambda_function.webhook.arn
+  function_name           = aws_lambda_function.this["webhook"].arn
   batch_size              = 10
   function_response_types = ["ReportBatchItemFailures"]
 }
@@ -64,48 +80,39 @@ resource "aws_secretsmanager_secret_version" "webhook" {
   secret_string = var.webhook_secret
 }
 
-data "archive_file" "webhook" {
+data "archive_file" "this" {
+  for_each = local.functions
+
   type        = "zip"
-  source_dir  = var.webhook_source_dir
-  output_path = "${path.root}/.build/${var.name_prefix}-webhook.zip"
+  source_dir  = each.value.source_dir
+  output_path = "${path.root}/.build/${var.name_prefix}-${each.key}.zip"
 }
 
-resource "aws_cloudwatch_log_group" "webhook" {
-  name              = "/aws/lambda/${var.name_prefix}-webhook"
+resource "aws_cloudwatch_log_group" "this" {
+  for_each = local.functions
+
+  name              = "/aws/lambda/${var.name_prefix}-${each.key}"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
 }
 
-resource "aws_lambda_function" "webhook" {
-  function_name    = "${var.name_prefix}-webhook"
-  description      = "Lee la cola del webhook, firma cada aviso y lo entrega"
+resource "aws_lambda_function" "this" {
+  for_each = local.functions
+
+  function_name    = "${var.name_prefix}-${each.key}"
+  description      = each.value.description
   role             = var.lambda_role_arn
   runtime          = var.lambda_runtime
   handler          = "handler.handler"
-  filename         = data.archive_file.webhook.output_path
-  source_code_hash = data.archive_file.webhook.output_base64sha256
+  filename         = data.archive_file.this[each.key].output_path
+  source_code_hash = data.archive_file.this[each.key].output_base64sha256
   timeout          = var.lambda_timeout
 
   environment {
-    variables = {
-      WEBHOOK_URL        = var.webhook_url
-      WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.webhook.arn
-    }
+    variables = each.value.environment
   }
 
-  depends_on = [aws_cloudwatch_log_group.webhook]
-}
-
-# Antes eran dos Lambdas con for_each (webhook y mailer). Sin esto, Terraform borraría y
-# volvería a crear la del webhook y su log group en los despliegues que ya existen.
-moved {
-  from = aws_lambda_function.this["webhook"]
-  to   = aws_lambda_function.webhook
-}
-
-moved {
-  from = aws_cloudwatch_log_group.this["webhook"]
-  to   = aws_cloudwatch_log_group.webhook
+  depends_on = [aws_cloudwatch_log_group.this]
 }
 
 resource "aws_sns_topic" "alerts" {

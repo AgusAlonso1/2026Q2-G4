@@ -129,6 +129,10 @@ module "service" {
   max_count         = each.value.max_count
   cpu_target        = each.value.cpu_target
   schedule          = each.value.schedule
+  queue_scaling     = each.value.queue_scaling
+
+  deployment_minimum_healthy_percent = each.value.deploy_min_pct
+  deployment_maximum_percent         = each.value.deploy_max_pct
 }
 
 module "events" {

@@ -88,6 +88,33 @@ variable "cpu_target" {
   default     = null
 }
 
+variable "queue_scaling" {
+  description = "Escalado por la profundidad de una cola SQS: suma una tarea si hay mensajes visibles (dos desde backlog_step) y baja a min_count cuando la cola lleva idle_minutes sin mensajes visibles, en curso ni demorados. null para no escalar por cola."
+  type = object({
+    queue_name   = string
+    backlog_step = optional(number, 10)
+    idle_minutes = optional(number, 10)
+  })
+  default = null
+
+  validation {
+    condition     = var.queue_scaling == null || (try(var.queue_scaling.backlog_step, 0) >= 1 && try(var.queue_scaling.idle_minutes, 0) >= 1)
+    error_message = "backlog_step e idle_minutes tienen que ser al menos 1."
+  }
+}
+
+variable "deployment_minimum_healthy_percent" {
+  description = "Tareas que tienen que seguir corriendo durante un deploy, en % de las deseadas. 0 deja que ECS pare las viejas antes de arrancar las nuevas."
+  type        = number
+  default     = 50
+}
+
+variable "deployment_maximum_percent" {
+  description = "Tope de tareas durante un deploy, en % de las deseadas. 100 reemplaza sin tareas de más."
+  type        = number
+  default     = 200
+}
+
 variable "schedule" {
   description = "Acciones programadas: fijan la cantidad de tareas a una hora. Cron de Application Auto Scaling."
   type = map(object({

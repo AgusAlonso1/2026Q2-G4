@@ -115,6 +115,24 @@ resource "aws_lambda_function" "this" {
   depends_on = [aws_cloudwatch_log_group.this]
 }
 
+resource "aws_sqs_queue" "exports_dlq" {
+  name                      = "${var.name_prefix}-exports-dlq"
+  kms_master_key_id         = var.kms_key_arn
+  message_retention_seconds = 1209600
+}
+
+resource "aws_sqs_queue" "exports" {
+  name                       = "${var.name_prefix}-exports"
+  kms_master_key_id          = var.kms_key_arn
+  visibility_timeout_seconds = var.export_visibility_timeout
+  receive_wait_time_seconds  = 20
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.exports_dlq.arn
+    maxReceiveCount     = var.export_max_attempts + 5
+  })
+}
+
 resource "aws_sns_topic" "titulares" {
   name              = "${var.name_prefix}-titulares"
   kms_master_key_id = var.kms_key_arn
@@ -139,6 +157,36 @@ resource "aws_cloudwatch_metric_alarm" "webhook_dlq" {
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
   dimensions          = { QueueName = aws_sqs_queue.webhook_dlq.name }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "exports_age" {
+  alarm_name          = "${var.name_prefix}-exports-age"
+  alarm_description   = "Hay un mensaje en la cola de exportaciones hace más de ${var.export_max_age_seconds} segundos: el exportador no lo tomó o lleva todo ese tiempo armando la exportación"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  dimensions          = { QueueName = aws_sqs_queue.exports.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.export_max_age_seconds
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "exports_dlq" {
+  alarm_name          = "${var.name_prefix}-exports-dlq"
+  alarm_description   = "Hay exportaciones que agotaron los reintentos, o mensajes que la cola no pudo entregar, en la DLQ"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.exports_dlq.name }
   statistic           = "Maximum"
   period              = 60
   evaluation_periods  = 1

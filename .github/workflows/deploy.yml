@@ -90,4 +90,5 @@ jobs:
             echo "| \`api_url\` | $(terraform output -raw api_url) |"
             echo "| \`login_url\` | $(terraform output -json cognito | jq -r .login_url) |"
             echo "| \`bucket_name\` | \`$(terraform output -raw bucket_name)\` |"
+            echo "| \`dashboard\` | $(terraform output -json monitoring | jq -r .dashboard_url) |"
           } >> "$GITHUB_STEP_SUMMARY"

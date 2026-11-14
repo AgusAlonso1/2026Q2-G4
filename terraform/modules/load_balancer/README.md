@@ -45,6 +45,8 @@ No modules.
 
 | Name | Description |
 |------|-------------|
+| <a name="output_arn_suffix"></a> [arn\_suffix](#output\_arn\_suffix) | Sufijo del ARN del NLB (net/<nombre>/<id>): la dimensión LoadBalancer de sus métricas en CloudWatch. |
 | <a name="output_dns_name"></a> [dns\_name](#output\_dns\_name) | DNS público del NLB: la URL de la API. |
 | <a name="output_target_group_arn"></a> [target\_group\_arn](#output\_target\_group\_arn) | Target group donde ECS registra las tareas de la API, por IP. Sale del listener: así el servicio se crea recién cuando el target group ya está atado al NLB. |
+| <a name="output_target_group_arn_suffix"></a> [target\_group\_arn\_suffix](#output\_target\_group\_arn\_suffix) | Sufijo del ARN del target group de la API (targetgroup/<nombre>/<id>): la dimensión TargetGroup de sus métricas. |
 <!-- END_TF_DOCS -->

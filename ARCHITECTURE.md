@@ -220,7 +220,8 @@ pool de conexiones a la base por tarea, y el plan falla si todos juntos, en su m
 tareas de más de un deploy, superan las de RDS (ver *Conexiones* en [Datos](#4-datos)).
 
 El cluster tiene **Container Insights**: CPU, memoria y red por servicio y por tarea en
-CloudWatch, sin instalar nada en las instancias.
+CloudWatch, sin instalar nada en las instancias. Lo que se mira y lo que avisa está en
+[Observabilidad](#observabilidad).
 
 **Escaneo de la imagen.** El repositorio de ECR tiene `scan_on_push`: cada imagen que sube
 `make imagen` se compara contra la base de vulnerabilidades conocidas (CVE) y el resultado
@@ -603,6 +604,42 @@ sumar una suscripción, sin tocar la API.
   mails a usuarios sería SES, pero AWS Academy no lo habilita: el rol del laboratorio no tiene
   permisos de SES (`ses:GetAccount` y `ses:VerifyEmailIdentity` dan `AccessDenied`).
 
+### Observabilidad
+
+La alarma de la DLQ cubre el lado asíncrono. El síncrono, la API y lo que tiene detrás, lo cubre
+[`modules/monitoring`](terraform/modules/monitoring), con los tres tipos de dato:
+
+- **Métricas.** Las que publican solos ECS (Container Insights), el NLB, RDS, SQS, Lambda y el
+  WAF, y tres que salen del log de la API: cada request deja una línea JSON con `ruta`, `estado`
+  y `ms`, y un *metric filter* la convierte en `Pedidos`, `Latencia` y `Respuestas5xx` sin tocar
+  el código. `/health` no cuenta: el NLB lo pide cada pocos segundos y bajaría la latencia.
+- **Logs.** Un log group por servicio, Lambda, stage de API Gateway y WAF, con retención y
+  cifrados. Cinco consultas guardadas de Logs Insights responden lo que se pregunta en un
+  incidente: qué pedidos fueron los más lentos, la latencia por ruta, qué devolvió 5xx, qué
+  errores dejaron los binarios y qué avisos del webhook no se entregaron.
+- **Trazas.** No hay: X-Ray se puede activar, pero el usuario del laboratorio no puede leerlas
+  (ver [Trade-offs](#10-trade-offs)).
+
+| Alarma | Se dispara cuando | Por qué ese umbral |
+|---|---|---|
+| `api-5xx` | 5 o más 5xx en 5 minutos | Un 5xx es un error del servidor, no del pedido: unos pocos seguidos ya son un incidente |
+| `api-latencia` | p99 > 1000 ms, 3 minutos seguidos | El percentil, no el promedio: un pago lento con alguien esperando en la caja es lo que importa |
+| `nlb-targets-sanos` | Menos targets sanos que el mínimo de tareas (2), 2 minutos | ECS reemplaza solo una tarea que falla; lo grave es quedar por debajo del mínimo |
+| `rds-cpu` | CPU > 80 %, 10 minutos | Sostenido, no un pico. No `CPUCreditBalance`: una T3 de RDS corre en modo *unlimited* y sin créditos no se frena, cobra |
+| `rds-conexiones` | Más de 70 conexiones | El diseño reparte 60 y una `db.t3.micro` acepta unas 80: pasar 70 es que algo se salió del cálculo |
+| `rds-memoria` | Menos de 100 MB libres, 10 minutos | Con poca memoria la base empieza a ir a disco |
+| `rds-disco` | Menos de 2 GB libres | El disco es fijo, sin autoescalado de almacenamiento: si se llena, la base deja de escribir |
+
+Todas publican en `ledger-alerts`, al dispararse y al volver a OK, así que el segundo mail cierra
+el incidente. Sin datos no alarman (`notBreaching`): sin tráfico no hay latencia ni 5xx. Los
+umbrales son variables del módulo.
+
+El **dashboard** junta, de arriba hacia abajo, el estado de las alarmas, el cómputo (tareas
+corriendo y deseadas, CPU de la API con la línea del objetivo del autoscaling, instancias del
+cluster), la entrada (targets del NLB, latencia p50 y p99, pedidos y 5xx), la base y lo
+asíncrono (la cola y la DLQ del webhook, su Lambda y lo que bloquea el WAF del login). Ahí se ve
+la elasticidad: con carga sube la CPU, después las tareas deseadas y por último las instancias.
+
 ## 8. Frontend
 
 Sitio estático en el bucket con website hosting: HTML, CSS y módulos de JavaScript sin
@@ -733,7 +770,7 @@ nuevo y Destroy no tendría qué destruir.
 | Requisito | Dónde en este repo |
 |---|---|
 | ≥ 1 módulo externo | `terraform-aws-modules/vpc/aws ~> 6.7` en [`network.tf`](terraform/organization/network.tf) |
-| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics` (10) |
+| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `waf`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics`, `monitoring` (12) |
 | ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `floor`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |

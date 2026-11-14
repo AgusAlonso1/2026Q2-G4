@@ -380,6 +380,15 @@ Después, entrar por `website_url`:
    reintentos queda en `ledger-exports-dlq`, con la exportación `fallida`, y sus alarmas llegan a
    `NOTIFICATION_EMAILS`.
 
+8. **Observabilidad.** `terraform output monitoring` (o el resumen del run de Deploy) tiene la
+   URL del dashboard de CloudWatch: tareas, CPU e instancias de ECS, targets del NLB, latencia,
+   pedidos y 5xx de la API, RDS, la cola del webhook y el WAF, con el estado de las alarmas
+   arriba. Mientras se usa la billetera, las métricas de la API aparecen en un par de minutos.
+   Para ver el escalado, generar carga contra la API y mirar cómo sube la CPU, después las
+   tareas deseadas y por último las instancias. Las alarmas avisan por mail a
+   `NOTIFICATION_EMAILS` al dispararse y al volver a OK. Las consultas guardadas están en
+   **CloudWatch → Logs Insights → Saved queries**, bajo `ledger/`.
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
@@ -568,6 +577,20 @@ escaneados por consulta, y cuatro consultas guardadas (ver
 
 ---
 
+### [`modules/monitoring`](terraform/modules/monitoring)
+
+Observabilidad del lado síncrono, que `events` no cubre. Tres *metric filters* sobre el log de la
+API (una línea JSON por request) publican `Pedidos`, `Latencia` y `Respuestas5xx` sin tocar el
+código; siete alarmas (5xx y latencia p99 de la API, targets sanos del NLB, y CPU, conexiones,
+memoria y disco de RDS) avisan al topic de alertas al dispararse y al volver a OK; un dashboard
+junta cómputo, entrada, base y eventos; y cinco consultas guardadas de Logs Insights (ver
+[Observabilidad](ARCHITECTURE.md#observabilidad)).
+
+**Recursos:** `aws_cloudwatch_log_metric_filter.api`, `aws_cloudwatch_metric_alarm.this`,
+`aws_cloudwatch_dashboard.this` y `aws_cloudwatch_query_definition.this`.
+
+---
+
 ### [`modules/database`](terraform/modules/database)
 
 RDS PostgreSQL Multi-AZ en las subredes de `data`, cifrada con la clave KMS del proyecto y sin
@@ -653,6 +676,8 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
 | `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
 | `can`, `regex`, `endswith` | `modules/analytics/variables.tf` | Valida que `history_start` sea un mes `AAAA-MM` y que los prefijos terminen en `/` |
+| `regex` | `organization/main.tf` (`module "monitoring"`) | El nombre de cada cola de SQS, el último tramo de su URL |
+| `jsonencode`, `concat` | `modules/monitoring/main.tf` | El cuerpo del dashboard, armando cada panel desde una lista en `locals` |
 
 ### Meta-argumentos utilizados
 
@@ -667,6 +692,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/events/main.tf` | La Lambda del webhook con su zip y su log group, y una suscripción de alertas por cada email de `notification_emails` |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `for_each` | `modules/analytics/main.tf` | Una consulta guardada de Athena por entrada de `local.queries` |
+| `for_each` | `modules/monitoring/main.tf` | Un metric filter, una alarma y una consulta de Logs Insights por entrada de su tabla en `locals` |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API), y las de cola con sus alarmas sólo con `queue_scaling` (el exportador) |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
@@ -674,6 +700,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `depends_on` | `modules/events/main.tf` | La suscripción de SNS a la cola se crea después de la política que deja escribir a SNS |
 | `depends_on` | `modules/storage/main.tf`, `modules/website/main.tf` | La política de cada bucket se aplica después de su bloqueo de acceso público |
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
+| `depends_on` | `modules/monitoring/main.tf` | Las alarmas sobre las métricas de la API se crean después de los metric filters que las publican |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
 | `lifecycle` | `organization/secrets.tf` | `precondition` en un `terraform_data` propio, para que el error salga una sola vez: el plan falla si los pools de todas las tareas, en el pico de un deploy, superan `db_max_connections` |
@@ -707,8 +734,8 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 | Data source | Dónde | Para qué |
 |---|---|---|
 | `aws_availability_zones` | `organization/providers.tf` | Las AZ disponibles de la región |
-| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
-| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service` | La región, sin pasarla como variable a cada módulo |
+| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth`, `modules/monitoring` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
+| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service`, `modules/monitoring` | La región, sin pasarla como variable a cada módulo |
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
 | `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
 | `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |
@@ -737,6 +764,7 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
 │       ├── events/        # SNS, SQS con DLQ, Lambda del webhook y alertas
+│       ├── monitoring/    # CloudWatch: métricas del log de la API, alarmas, dashboard y consultas
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/

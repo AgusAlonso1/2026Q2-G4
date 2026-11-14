@@ -80,3 +80,11 @@ output "analytics" {
     console_url      = "https://${var.aws_region}.console.aws.amazon.com/athena/home?region=${var.aws_region}#/query-editor"
   }
 }
+
+output "waf" {
+  description = "WAF del login de Cognito: web ACL y log group de los pedidos evaluados."
+  value = {
+    web_acl   = module.waf.web_acl_name
+    log_group = module.waf.log_group_name
+  }
+}

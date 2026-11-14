@@ -36,3 +36,8 @@ output "logout_url" {
   description = "Cierra la sesión de la Hosted UI y vuelve al frontend pasando por /logout."
   value       = "${local.domain_url}/logout?client_id=${aws_cognito_user_pool_client.this.id}&logout_uri=${urlencode(local.logout_url)}"
 }
+
+output "user_pool_arn" {
+  description = "ARN del user pool. Para asociarle la web ACL de WAF."
+  value       = aws_cognito_user_pool.this.arn
+}

@@ -13,7 +13,7 @@ export PROJECT
 export TF_VAR_image_tag = $(IMAGE_TAG)
 export TF_VAR_project_name = $(PROJECT)
 
-.PHONY: help fmt fmt-check init validate tag imagen plan apply destroy clean carga
+.PHONY: help fmt fmt-check init validate tag imagen plan apply destroy clean carga pico pico-fin
 
 help:
 	@echo "make fmt        Formatea todo terraform/"
@@ -27,6 +27,8 @@ help:
 	@echo "make destroy    Destruye toda la infraestructura y después los buckets (proyecto y state)"
 	@echo "make clean      Borra .terraform/ y tfplan"
 	@echo "make carga      Genera carga contra la API (SEGUNDOS, CONCURRENCIA y TOKEN opcionales) para ver el escalado en el dashboard"
+	@echo "make pico       Sube el mínimo de la API a PICO tareas (4) ahora, como el piso de los días de cobro, para verlo en el dashboard"
+	@echo "make pico-fin   Devuelve la API a su mínimo de 2 tareas"
 
 fmt:
 	$(TF) fmt -recursive terraform
@@ -77,3 +79,14 @@ clean:
 
 carga:
 	scripts/carga.sh $(or $(SEGUNDOS),300) $(or $(CONCURRENCIA),200)
+
+# Demo del escalado: lo mismo que hace el piso programado de los días de cobro, pero ya. El
+# próximo apply vuelve a dejar el mínimo que dice Terraform.
+API_TARGET = --service-namespace ecs --scalable-dimension ecs:service:DesiredCount --resource-id service/$(PROJECT)-cluster/$(PROJECT)-api
+PICO ?= 4
+
+pico:
+	aws application-autoscaling register-scalable-target --region $(REGION) $(API_TARGET) --min-capacity $(PICO) --max-capacity 5
+
+pico-fin:
+	aws application-autoscaling register-scalable-target --region $(REGION) $(API_TARGET) --min-capacity 2 --max-capacity 5

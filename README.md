@@ -370,6 +370,12 @@ Después, entrar por `website_url`:
    TOKEN=<token> make carga SEGUNDOS=600 CONCURRENCIA=200
    ```
 
+   Generar desde afuera la carga que lleva la CPU al 60 % es difícil: sin token, la raíz responde
+   en menos de un milisegundo y miles de pedidos por segundo apenas mueven la CPU. Para mostrar el
+   escalado en vivo, `make pico` sube el mínimo de la API a 4 tareas en el momento, como el piso
+   de los días de cobro: en el dashboard se ven las tareas deseadas, después las que corren y,
+   si no hay lugar, la instancia nueva. `make pico-fin` lo devuelve a 2.
+
 9. **Auditoría.** `terraform output audit` tiene el bucket de logs y las reglas de Config:
    - **CloudTrail → Trails → `ledger-trail`**: los eventos quedan en
      `cloudtrail/` del bucket de logs, con un digest por hora (`validate-logs` lo verifica).

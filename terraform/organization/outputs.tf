@@ -90,3 +90,13 @@ output "waf" {
     log_group = module.waf.log_group_name
   }
 }
+
+output "monitoring" {
+  description = "Observabilidad: dashboard de CloudWatch, alarmas que avisan al topic de alertas y consultas guardadas de Logs Insights."
+  value = {
+    dashboard_url    = module.monitoring.dashboard_url
+    alarms           = module.monitoring.alarm_names
+    metric_namespace = module.monitoring.metric_namespace
+    log_queries      = module.monitoring.query_names
+  }
+}

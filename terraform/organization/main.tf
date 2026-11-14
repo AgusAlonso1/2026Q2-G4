@@ -151,3 +151,29 @@ module "events" {
   exports_max_attempts               = local.exports_max_attempts
   exports_visibility_timeout_seconds = local.exports_visibility_timeout_seconds
 }
+
+module "monitoring" {
+  source = "../modules/monitoring"
+
+  name_prefix     = local.name_prefix
+  alarm_topic_arn = module.events.alerts_topic_arn
+
+  cluster_name           = aws_ecs_cluster.this.name
+  api_service_name       = module.service["api"].name
+  archive_service_name   = module.service["archive"].name
+  api_min_tasks          = local.services.api.min_count
+  api_cpu_target         = local.services.api.cpu_target
+  api_log_group_name     = module.service["api"].log_group_name
+  archive_log_group_name = module.service["archive"].log_group_name
+
+  # El módulo events expone las URL de las colas; el nombre es el último tramo.
+  webhook_queue_name     = regex("[^/]+$", module.events.webhook_queue_url)
+  webhook_dlq_name       = regex("[^/]+$", module.events.webhook_dlq_url)
+  webhook_function_name  = "${local.name_prefix}-webhook"
+  webhook_log_group_name = "/aws/lambda/${local.name_prefix}-webhook"
+
+  nlb_arn_suffix          = module.load_balancer.arn_suffix
+  target_group_arn_suffix = module.load_balancer.target_group_arn_suffix
+  db_instance_identifier  = module.database.identifier
+  waf_web_acl_name        = module.waf.web_acl_name
+}

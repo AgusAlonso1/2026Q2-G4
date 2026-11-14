@@ -101,9 +101,9 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
 En la pestaña **Variables**, `NOTIFICATION_EMAILS`: emails separados por comas (por ejemplo
 `ana@gmail.com,beto@itba.edu.ar`). Cada uno se suscribe al topic SNS de alertas de operación
-(la alarma de la DLQ del webhook). Después del primer Deploy, a cada dirección le llega un mail
-de **AWS Notifications** con el link para confirmar la suscripción. Si queda vacía, no hay
-alertas por mail.
+(las alarmas de CloudWatch) y recibe los avisos del presupuesto mensual. Después del primer
+Deploy, a cada dirección le llega un mail de **AWS Notifications** con el link para confirmar la
+suscripción. Si queda vacía, no hay alertas por mail ni presupuesto.
 
 #### Opcional: tamaño de los archivos del archivo
 
@@ -362,6 +362,27 @@ Después, entrar por `website_url`:
    `NOTIFICATION_EMAILS` al dispararse y al volver a OK. Las consultas guardadas están en
    **CloudWatch → Logs Insights → Saved queries**, bajo `ledger/`.
 
+   Para generar la carga, `make carga` (necesita [`hey`](https://github.com/rakyll/hey)). Con
+   `TOKEN` pide los movimientos de una cuenta, que pasan por la base como un usuario real; el
+   token sale de la consola del navegador con la sesión iniciada en el sitio:
+
+   ```bash
+   TOKEN=<token> make carga SEGUNDOS=600 CONCURRENCIA=200
+   ```
+
+9. **Auditoría.** `terraform output audit` tiene el bucket de logs y las reglas de Config:
+   - **CloudTrail → Trails → `ledger-trail`**: los eventos quedan en
+     `cloudtrail/` del bucket de logs, con un digest por hora (`validate-logs` lo verifica).
+   - **VPC → Flow logs**: el tráfico de la VPC, en Parquet, en `flow-logs/`.
+   - **Config → Rules**: el bucket del frontend sale *no conforme* en
+     `ledger-s3-sin-lectura-publica`, a propósito; el resto, conforme.
+   - **Billing → Budgets → `ledger-mensual`**, si hay `NOTIFICATION_EMAILS`.
+
+10. **Backups.** `terraform output backup` tiene los vaults y el plan. El backup corre solo a las
+    4 de Buenos Aires; para no esperar, **AWS Backup → Protected resources → Create on-demand
+    backup** sobre la base, con el rol `LabRole`. Cuando termina, **Copy** lo copia al vault
+    `ledger-dr` de `us-west-2` (el plan diario lo hace solo).
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
@@ -384,6 +405,7 @@ make imagen    # construye apps/ledger y la sube a ECR (si ese tag ya está, no 
 make plan      # deja el plan en terraform/organization/tfplan, con ese tag
 make apply     # crea los buckets del proyecto si no existen y aplica ese plan
 make destroy   # pide confirmación; borra también los buckets
+make carga     # genera carga contra la API para ver el escalado (TOKEN, SEGUNDOS y CONCURRENCIA)
 ```
 
 `make help` lista el resto (`fmt`, `fmt-check`, `validate`, `clean`). Local y pipeline usan el
@@ -393,7 +415,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 
 ## Buckets de S3: los crea la AWS CLI
 
-Los tres buckets del proyecto no son recursos `aws_s3_bucket`: los crea
+Los cuatro buckets no son recursos `aws_s3_bucket`: los crea
 [`scripts/buckets.sh`](scripts/buckets.sh) con `aws s3api create-bucket`, tanto en el pipeline
 como desde una máquina local.
 
@@ -401,6 +423,7 @@ como desde una máquina local.
 |---|---|---|
 | `ledger-<cuenta>-us-east-1-an` (archivo y exportaciones) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
 | `ledger-web-<cuenta>-us-east-1-an` (frontend) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
+| `ledger-logs-<cuenta>-us-east-1-an` (CloudTrail, flow logs y Config) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
 | `ledger-tfstate-<cuenta>-us-east-1-an` (state) | `make init` | El backend lo necesita antes del `init` |
 
 **El SCP de AWS Academy.** La política de la organización del laboratorio niega
@@ -557,6 +580,30 @@ junta cómputo, entrada, base y eventos; y cinco consultas guardadas de Logs Ins
 
 ---
 
+### [`modules/audit`](terraform/modules/audit)
+
+Auditoría y gobernanza sobre el bucket de logs, que crea `scripts/buckets.sh`: el trail de
+CloudTrail (cifrado con la clave del proyecto y con validación de integridad), los flow logs de
+la VPC en Parquet, AWS Config con nueve reglas administradas y un presupuesto mensual con avisos
+por mail (ver [Auditoría y gobernanza](ARCHITECTURE.md#auditoría-y-gobernanza)).
+
+**Recursos:** la configuración del bucket de logs, `aws_cloudtrail.this`, `aws_flow_log.vpc`,
+`aws_iam_service_linked_role.config`, `aws_config_configuration_recorder.this` y su estado,
+`aws_config_delivery_channel.this`, `aws_config_config_rule.this` y `aws_budgets_budget.this`.
+
+---
+
+### [`modules/backup`](terraform/modules/backup)
+
+AWS Backup de RDS: un plan diario en un vault de la región del despliegue, con copia a otro vault
+en `us-west-2` (ver [Backups y Disaster Recovery](ARCHITECTURE.md#backups-y-disaster-recovery)).
+Recibe dos providers, el de la región principal y `aws.dr`.
+
+**Recursos:** `aws_backup_vault.primary`, `aws_backup_vault.dr`, `aws_backup_plan.this` y
+`aws_backup_selection.rds`.
+
+---
+
 ### [`modules/database`](terraform/modules/database)
 
 RDS PostgreSQL Multi-AZ en las subredes de `data`, cifrada con la clave KMS del proyecto y sin
@@ -657,6 +704,10 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/monitoring/main.tf` | Un metric filter, una alarma y una consulta de Logs Insights por entrada de su tabla en `locals` |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
+| `count` | `modules/audit/main.tf` | El presupuesto sólo si hay emails a los que avisar |
+| `for_each` | `modules/audit/main.tf` | Una regla de AWS Config por entrada de `local.config_rules` |
+| `provider` (alias) | `organization/providers.tf`, `modules/backup/main.tf` | Un segundo provider, `aws.dr`, en `us-west-2`: ahí se crea el vault de las copias de los backups |
+| `providers` | `organization/main.tf` (`module "backup"`) | Le pasa al módulo los dos providers, el principal y el de DR |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
 | `depends_on` | `modules/events/main.tf` | La suscripción de SNS a la cola se crea después de la política que deja escribir a SNS |
@@ -669,7 +720,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 ### Validación de variables
 
 Los bloques `validation` comprueban los valores de entrada: limitan `archive_schedule` a 0 o 1
-tarea, `log_retention_days` a los valores que admite CloudWatch, `target_capacity` al rango de
+tarea, `api_schedule` al rango de 2 a 5 tareas, que `dr_region` sea otra región, `log_retention_days` a los valores que admite CloudWatch, `target_capacity` al rango de
 1 a 100, que el bloque de un Parquet del archivo no tenga más filas que la parte
 (`archive_rows_per_row_group` ≤ `archive_rows_per_part`, una validación que cruza dos variables)
 y, en Athena, el formato de `history_start`, los prefijos y el tope de bytes escaneados (Athena
@@ -721,6 +772,8 @@ no acepta menos de 10 MiB). Están en `organization/variables.tf`,
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
 │       ├── events/        # SNS, SQS con DLQ, Lambda del webhook y alertas
 │       ├── monitoring/    # CloudWatch: métricas del log de la API, alarmas, dashboard y consultas
+│       ├── audit/         # CloudTrail, flow logs, AWS Config y presupuesto, en el bucket de logs
+│       ├── backup/        # AWS Backup de RDS con copia a us-west-2
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/

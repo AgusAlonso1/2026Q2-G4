@@ -16,8 +16,8 @@ el webhook de cada orden terminada, que sale por SNS y SQS después de responder
 Restricciones que guían el diseño:
 
 - **AWS Academy**: no se pueden crear usuarios ni roles de IAM. Las instancias usan
-  `LabInstanceProfile` y las tareas de ECS y las Lambdas usan `LabRole`. Sólo está habilitada
-  `us-east-1`.
+  `LabInstanceProfile` y las tareas de ECS y las Lambdas usan `LabRole`. Sólo están habilitadas
+  `us-east-1`, donde corre todo, y `us-west-2`, donde van las copias de los backups.
 - **Reproducible desde el pipeline**: todo vive en código y se despliega y destruye desde
   GitHub Actions, en cualquier cuenta, sin editar nada. Los nombres que tienen que ser únicos
   llevan el ID de la cuenta.
@@ -106,7 +106,7 @@ propio ASG, en sus propias subredes:
 | | API | Archivador |
 |---|---|---|
 | Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet |
-| Tareas | 2 a 5, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
+| Tareas | 2 a 5, escalan por CPU (60 %); 4 a 5 los días de cobro | 0, y 1 durante la ventana de archivado |
 | Tipo de instancia | `c7g.large` (Graviton), dos tareas por instancia | `t3.medium`, una tarea |
 | Instancias | Las que hagan falta para esas tareas, con lugar libre | 0 fuera de la ventana |
 | Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 |
@@ -116,6 +116,13 @@ horario) y el capacity provider agrega o apaga instancias para alojarlas. Con re
 cada tarea tiene su propia ENI y su security group, y la instancia se queda una para ella: una
 `c7g.large` (3 ENIs) aloja dos tareas, y la `t3.medium` del archivador, una sola: la tarea pide
 3 GB de los 4 que tiene.
+
+**Piso programado para los días de cobro.** El escalado por CPU reacciona: la tarea nueva llega
+después de que subió la carga, y si además hace falta una instancia, tarda unos minutos más. El
+cobro de haberes es un pico que se conoce de antemano, así que del 1 al 5 de cada mes, de 8 a 20
+(hora de Buenos Aires), dos acciones programadas suben el mínimo de la API a 4 tareas y a la
+noche lo devuelven a 2 (`api_schedule`). El máximo queda en 5, así que el escalado por CPU sigue
+funcionando entre los dos. Es escalado proactivo además del reactivo, y cuesta sólo esas horas.
 
 El capacity provider de la API apunta a tener ocupado el 80 % de las instancias
 (`target_capacity`), para dejar lugar de reserva: la primera tarea nueva de un scale-out o de un
@@ -214,7 +221,8 @@ una sola vez, la vez que se sube.
 ## 4. Datos
 
 RDS PostgreSQL 18 Multi-AZ (`db.t3.micro`) en las subredes de `data`, sin acceso público,
-cifrada con la clave del proyecto y con 7 días de backups automáticos. La standby está en la
+cifrada con la clave del proyecto, con 7 días de backups automáticos y una copia diaria en otra
+región (ver [Backups y Disaster Recovery](#backups-y-disaster-recovery)). La standby está en la
 otra AZ, con réplica sincrónica y failover automático sin cambiar el endpoint. No es una
 réplica de lectura: no atiende tráfico, y nunca se autoriza un pago contra datos con retraso.
 
@@ -330,6 +338,27 @@ completa de una cuenta) se responden con SQL sobre el archivo, en Athena
   consulta (el usuario del laboratorio o `LabRole`), que la política de la clave KMS ya habilita
   para descifrar. No pasa por el gateway endpoint ni hace falta un endpoint nuevo. La API no
   consulta Athena: el análisis es para operación y auditoría, no para el camino de un pago.
+
+### Backups y Disaster Recovery
+
+Multi-AZ cubre la caída de una zona (RPO cero, RTO de uno o dos minutos), pero no la de la
+región ni un error que se replica a la standby. Los backups automáticos de RDS tampoco alcanzan:
+viven con la instancia y en su región. Por eso hay un plan de **AWS Backup**
+([`modules/backup`](terraform/modules/backup)):
+
+- **Diario**, a las 4 de Buenos Aires, en un vault aparte, con 7 días de retención.
+- **Copia a `us-west-2`**, la otra región que habilita AWS Academy, en su propio vault. Un
+  provider de Terraform con alias (`aws.dr`) crea ese vault en la otra región.
+- **Rol:** `LabRole`, que confía en `backup.amazonaws.com`.
+
+Es la estrategia **backup & restore** (cold standby) de la clase: si se cae `us-east-1`, el
+Terraform del repo levanta la infraestructura en `us-west-2` (`aws_region`) y la base se restaura
+desde la última copia. RPO de hasta un día, RTO de lo que tarda un Deploy más el restore. Pilot
+light (una réplica de lectura de RDS en la otra región, que se promueve) bajaría el RPO a
+segundos, a cambio de pagar esa base todo el tiempo; para la demo no se justifica.
+
+Los vaults llevan `force_destroy`, porque Destroy tiene que poder borrar todo. En una cuenta
+propia no lo tendrían, y el de DR llevaría un vault lock (AWS Academy no deja crearlo).
 
 **Conexiones.** Cada tarea abre como máximo `pool_max_conns` conexiones, que va en la
 `DB_URL`. Se calcula repartiendo `db_max_connections` (60 por defecto, por debajo de las ~80 de
@@ -507,6 +536,34 @@ corriendo y deseadas, CPU de la API con la línea del objetivo del autoscaling, 
 cluster), la entrada (targets del NLB, latencia p50 y p99, pedidos y 5xx), la base y lo
 asíncrono (la cola y la DLQ del webhook, su Lambda y lo que bloquea el WAF del login). Ahí se ve
 la elasticidad: con carga sube la CPU, después las tareas deseadas y por último las instancias.
+`make carga` genera esa carga.
+
+### Auditoría y gobernanza
+
+CloudWatch dice cómo anda el sistema. [`modules/audit`](terraform/modules/audit) suma los otros
+dos servicios de monitoreo de la clase: quién hizo qué (CloudTrail) y si la configuración es la
+correcta (Config). Todo escribe en un bucket de logs aparte, `ledger-logs-<cuenta>-us-east-1-an`:
+lo escriben servicios de AWS y no la aplicación, y quien lee el archivo del ledger no tiene por
+qué leer la auditoría. Lo crea `scripts/buckets.sh`, como los otros, con SSE-S3 y 90 días de
+retención.
+
+- **CloudTrail.** Sin trail, CloudTrail guarda 90 días de eventos de gestión y nada más. El trail
+  los deja en S3, cifrados con la clave del proyecto y con un digest por hora para probar que
+  nadie los tocó (`enable_log_file_validation`). El primero de eventos de gestión es gratis.
+  AWS Academy no deja mandarlo también a CloudWatch Logs.
+- **VPC Flow Logs.** Todo el tráfico de la VPC, aceptado y rechazado, a S3 en Parquet con
+  particiones estilo Hive, así que se consulta con Athena. Muestran, por ejemplo, que las
+  subredes de `archive` no intentan salir a Internet. A S3 y no a CloudWatch Logs: es más barato
+  y no necesita rol (la confianza de `LabRole` no incluye a `vpc-flow-logs.amazonaws.com`).
+- **AWS Config.** Registra cómo están configurados los buckets, la base, los security groups, la
+  VPC y los discos, y los evalúa contra nueve reglas administradas: buckets sin lectura pública y
+  sólo por HTTPS, RDS cifrada, Multi-AZ y sin acceso público, sin SSH abierto, discos cifrados,
+  la VPC con flow logs y CloudTrail activo. El bucket del frontend sale *no conforme* en la
+  primera regla, a propósito: es el único público. Graba con su rol vinculado al servicio, que
+  AWS Academy deja crear. Registra sólo esos tipos de recurso porque Config cobra por cambio.
+- **Presupuesto.** AWS Budgets avisa a `NOTIFICATION_EMAILS` cuando lo gastado en el mes pasa el
+  80 % de `budget_limit_usd` (50, el crédito del laboratorio) y cuando el pronóstico pasa el
+  100 %. Sin emails no se crea.
 
 ## 8. Frontend
 
@@ -596,12 +653,13 @@ nuevo y Destroy no tendría qué destruir.
 - **La base no sobrevive a Destroy**: sin deletion protection ni snapshot final, porque Destroy
   tiene que poder borrarla sin un apply previo. Mientras está desplegada guarda 7 días de backups
   automáticos, que permiten volver a cualquier punto de ese período (por ejemplo, después de un
-  reinicio del ledger).
-- **Sin X-Ray en las Lambdas, Performance Insights en RDS ni VPC Flow Logs**, por el laboratorio:
-  el usuario de AWS Academy no puede leer las trazas de X-Ray ni las métricas de Performance
-  Insights (los dos se pueden activar, pero nadie vería lo que juntan), y la trust policy de
-  `LabRole` no incluye a `vpc-flow-logs.amazonaws.com`, así que los Flow Logs sólo podrían ir a
-  S3, a un bucket aparte.
+  reinicio del ledger), y las copias diarias de AWS Backup, que Destroy también borra.
+- **Sin X-Ray en las Lambdas ni Performance Insights en RDS**, por el laboratorio: el usuario de
+  AWS Academy no puede leer las trazas de X-Ray ni las métricas de Performance Insights (los dos
+  se pueden activar, pero nadie vería lo que juntan). Los flow logs van a S3 por lo mismo: la
+  trust policy de `LabRole` no incluye a `vpc-flow-logs.amazonaws.com`.
+- **Backups con RPO de un día ante la caída de la región.** Una réplica de lectura en `us-west-2`
+  lo bajaría a segundos, pagando una segunda base todo el tiempo.
 - **El evento se publica después del commit.** Si la tarea muere entre el commit y la
   publicación, ese aviso se pierde. La ventana es una llamada a SNS, y al apagarse la tarea la
   API espera las publicaciones en curso. Un outbox (el evento escrito en la misma transacción)
@@ -633,7 +691,7 @@ nuevo y Destroy no tendría qué destruir.
 | Requisito | Dónde en este repo |
 |---|---|
 | ≥ 1 módulo externo | `terraform-aws-modules/vpc/aws ~> 6.7` en [`network.tf`](terraform/organization/network.tf) |
-| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `waf`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics`, `monitoring` (12) |
+| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `waf`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics`, `monitoring`, `audit`, `backup` (14) |
 | ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `floor`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |

@@ -46,6 +46,7 @@ No modules.
 | Name | Description |
 |------|-------------|
 | <a name="output_address"></a> [address](#output\_address) | Hostname de la base. En un failover Multi-AZ apunta a la nueva primaria sin cambiar. |
+| <a name="output_arn"></a> [arn](#output\_arn) | ARN de la instancia: lo que respalda AWS Backup. |
 | <a name="output_identifier"></a> [identifier](#output\_identifier) | Identificador de la instancia: la dimensión DBInstanceIdentifier de sus métricas en CloudWatch. |
 | <a name="output_url"></a> [url](#output\_url) | DB\_URL de los binarios, con TLS obligatorio. Lleva la password: es sensible. |
 <!-- END_TF_DOCS -->

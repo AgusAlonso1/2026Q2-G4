@@ -54,7 +54,7 @@ No modules.
 | <a name="input_name"></a> [name](#input\_name) | Nombre del servicio, de su task definition y de su log group. | `string` | n/a | yes |
 | <a name="input_port"></a> [port](#input\_port) | Puerto del contenedor. null si el servicio no recibe tráfico. | `number` | `null` | no |
 | <a name="input_role_arn"></a> [role\_arn](#input\_role\_arn) | Rol de ejecución y de la tarea. En AWS Academy no se pueden crear roles: es el del laboratorio. | `string` | n/a | yes |
-| <a name="input_schedule"></a> [schedule](#input\_schedule) | Acciones programadas: fijan la cantidad de tareas a una hora. Cron de Application Auto Scaling. | <pre>map(object({<br/>    schedule = string<br/>    tasks    = number<br/>  }))</pre> | `{}` | no |
+| <a name="input_schedule"></a> [schedule](#input\_schedule) | Acciones programadas, con cron de Application Auto Scaling. tasks es el mínimo de tareas desde esa hora; sin max también es el máximo (fija la cantidad), con max el autoscaling sigue funcionando entre los dos. | <pre>map(object({<br/>    schedule = string<br/>    tasks    = number<br/>    max      = optional(number)<br/>  }))</pre> | `{}` | no |
 | <a name="input_schedule_time_zone"></a> [schedule\_time\_zone](#input\_schedule\_time\_zone) | Zona horaria de las acciones programadas. | `string` | `"America/Argentina/Buenos_Aires"` | no |
 | <a name="input_secrets"></a> [secrets](#input\_secrets) | Variables secretas: nombre → ARN de Secrets Manager (arn:clave-json::version-id). ECS lee el valor al arrancar la tarea, con el rol de ejecución. | `map(string)` | `{}` | no |
 | <a name="input_security_group_id"></a> [security\_group\_id](#input\_security\_group\_id) | SG de la ENI de cada tarea. | `string` | n/a | yes |

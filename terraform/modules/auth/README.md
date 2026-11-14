@@ -83,5 +83,6 @@ No modules.
 | <a name="output_issuer"></a> [issuer](#output\_issuer) | Issuer de los tokens. La API valida contra <issuer>/.well-known/jwks.json. |
 | <a name="output_login_url"></a> [login\_url](#output\_login\_url) | Hosted UI lista para usar. El frontend le agrega &state=<random> antes de redirigir. |
 | <a name="output_logout_url"></a> [logout\_url](#output\_logout\_url) | Cierra la sesión de la Hosted UI y vuelve al frontend pasando por /logout. |
+| <a name="output_user_pool_arn"></a> [user\_pool\_arn](#output\_user\_pool\_arn) | ARN del user pool. Para asociarle la web ACL de WAF. |
 | <a name="output_user_pool_id"></a> [user\_pool\_id](#output\_user\_pool\_id) | ID del user pool. Para crear usuarios por CLI (admin-create-user). |
 <!-- END_TF_DOCS -->

@@ -95,8 +95,10 @@ module "capacity" {
   instance_type        = each.value.instance_type
   instance_profile_arn = data.aws_iam_instance_profile.lab.arn
   security_group_id    = module.security_groups.ids.host
-  max_size             = each.value.max_count + 1
+  max_size             = each.value.max_count + (each.value.deployment_maximum_percent > 100 ? 1 : 0)
   target_capacity      = each.value.target_capacity
+
+  maximum_scaling_step_size = each.value.maximum_scaling_step_size
 
   depends_on = [aws_vpc_endpoint.interface, module.security_groups]
 }
@@ -129,6 +131,10 @@ module "service" {
   max_count         = each.value.max_count
   cpu_target        = each.value.cpu_target
   schedule          = each.value.schedule
+  queue_scaling     = each.value.queue_scaling
+
+  deployment_minimum_healthy_percent = each.value.deployment_minimum_healthy_percent
+  deployment_maximum_percent         = each.value.deployment_maximum_percent
 }
 
 module "events" {
@@ -141,4 +147,7 @@ module "events" {
   webhook_url         = var.webhook_url
   webhook_secret      = local.webhook_secret
   notification_emails = local.notification_emails
+
+  exports_max_attempts               = local.exports_max_attempts
+  exports_visibility_timeout_seconds = local.exports_visibility_timeout_seconds
 }

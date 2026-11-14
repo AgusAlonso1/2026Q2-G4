@@ -22,3 +22,12 @@ resource "aws_secretsmanager_secret_version" "this" {
   secret_id     = aws_secretsmanager_secret.this[each.key].id
   secret_string = jsonencode(local.secret_values[each.key])
 }
+
+resource "terraform_data" "db_connections" {
+  lifecycle {
+    precondition {
+      condition     = local.db_connections <= var.db_max_connections
+      error_message = "Los pools de las tareas suman ${local.db_connections} conexiones en un deploy y db_max_connections es ${var.db_max_connections}: subirlo o achicar db_pool o max_count en locals.tf."
+    }
+  }
+}

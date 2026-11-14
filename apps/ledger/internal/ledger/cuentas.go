@@ -136,6 +136,12 @@ type Movimiento struct {
 	CreadoEn      time.Time `json:"creado_en"`
 }
 
+type movimientoConAlias struct {
+	Movimiento
+	alias            string
+	aliasContraparte string
+}
+
 func (s *Servicio) Movimientos(ctx context.Context, cuentaID int64, limite, desplazamiento int) ([]Movimiento, error) {
 	if limite <= 0 || limite > 200 {
 		limite = 50

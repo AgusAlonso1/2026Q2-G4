@@ -433,12 +433,12 @@ func (a *API) semilla(w http.ResponseWriter, r *http.Request) {
 	if !leerJSON(w, r, &e) {
 		return
 	}
-	n, err := a.svc.SembrarPeriodo(r.Context(), e)
+	res, err := a.svc.SembrarPeriodo(r.Context(), e)
 	if err != nil {
 		apierr.EscribirError(w, err)
 		return
 	}
-	apierr.Escribir(w, http.StatusCreated, map[string]any{"transferencias": n, "periodo": e.Periodo})
+	apierr.Escribir(w, http.StatusCreated, res)
 }
 
 func (a *API) reinicio(w http.ResponseWriter, r *http.Request) {

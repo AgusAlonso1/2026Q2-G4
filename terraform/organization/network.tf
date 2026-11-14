@@ -84,9 +84,10 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 # Sin NAT en las subredes de archive: los hosts de ECS llegan por acá a ECS, ECR, Logs y
-# Secrets Manager. Los de app también, por el DNS privado.
+# Secrets Manager, y las tareas del exportador a SQS y SNS. Los de app también, por el DNS
+# privado, y las tareas de la API a SNS y SQS.
 resource "aws_vpc_endpoint" "interface" {
-  for_each = toset(["ecs", "ecs-agent", "ecs-telemetry", "ecr.api", "ecr.dkr", "logs", "secretsmanager", "sns"])
+  for_each = toset(["ecs", "ecs-agent", "ecs-telemetry", "ecr.api", "ecr.dkr", "logs", "secretsmanager", "sns", "sqs"])
 
   vpc_id              = module.vpc.vpc_id
   service_name        = "com.amazonaws.${var.aws_region}.${each.key}"

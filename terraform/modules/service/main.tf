@@ -1,5 +1,13 @@
 data "aws_region" "current" {}
 
+locals {
+  queue_metrics = {
+    visible   = "ApproximateNumberOfMessagesVisible"
+    in_flight = "ApproximateNumberOfMessagesNotVisible"
+    delayed   = "ApproximateNumberOfMessagesDelayed"
+  }
+}
+
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/${var.name}"
   retention_in_days = var.log_retention_days
@@ -45,8 +53,8 @@ resource "aws_ecs_service" "this" {
   desired_count                     = var.min_count
   health_check_grace_period_seconds = var.target_group_arn == null ? null : 90
 
-  deployment_minimum_healthy_percent = 50
-  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = var.deployment_minimum_healthy_percent
+  deployment_maximum_percent         = var.deployment_maximum_percent
 
   deployment_circuit_breaker {
     enable   = true
@@ -123,5 +131,104 @@ resource "aws_appautoscaling_scheduled_action" "this" {
   scalable_target_action {
     min_capacity = each.value.tasks
     max_capacity = each.value.tasks
+  }
+}
+
+resource "aws_appautoscaling_policy" "queue_out" {
+  count = var.queue_scaling == null ? 0 : 1
+
+  name               = "${var.name}-queue-out"
+  service_namespace  = aws_appautoscaling_target.this.service_namespace
+  resource_id        = aws_appautoscaling_target.this.resource_id
+  scalable_dimension = aws_appautoscaling_target.this.scalable_dimension
+  policy_type        = "StepScaling"
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    metric_aggregation_type = "Maximum"
+    cooldown                = 300
+
+    step_adjustment {
+      metric_interval_lower_bound = 0
+      metric_interval_upper_bound = var.queue_scaling.backlog_step
+      scaling_adjustment          = 1
+    }
+
+    step_adjustment {
+      metric_interval_lower_bound = var.queue_scaling.backlog_step
+      scaling_adjustment          = 2
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "queue_out" {
+  count = var.queue_scaling == null ? 0 : 1
+
+  alarm_name          = "${var.name}-queue-out"
+  alarm_description   = "Hay mensajes esperando en ${var.queue_scaling.queue_name}: suma tareas a ${var.name}"
+  namespace           = "AWS/SQS"
+  metric_name         = local.queue_metrics.visible
+  dimensions          = { QueueName = var.queue_scaling.queue_name }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_appautoscaling_policy.queue_out[0].arn]
+}
+
+resource "aws_appautoscaling_policy" "queue_in" {
+  count = var.queue_scaling == null ? 0 : 1
+
+  name               = "${var.name}-queue-in"
+  service_namespace  = aws_appautoscaling_target.this.service_namespace
+  resource_id        = aws_appautoscaling_target.this.resource_id
+  scalable_dimension = aws_appautoscaling_target.this.scalable_dimension
+  policy_type        = "StepScaling"
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ExactCapacity"
+    metric_aggregation_type = "Maximum"
+    cooldown                = 60
+
+    step_adjustment {
+      metric_interval_upper_bound = 0
+      scaling_adjustment          = var.min_count
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "queue_in" {
+  count = var.queue_scaling == null ? 0 : 1
+
+  alarm_name          = "${var.name}-queue-in"
+  alarm_description   = "${var.queue_scaling.queue_name} lleva ${var.queue_scaling.idle_minutes} minutos sin mensajes: baja ${var.name} al mínimo"
+  evaluation_periods  = var.queue_scaling.idle_minutes
+  datapoints_to_alarm = var.queue_scaling.idle_minutes
+  comparison_operator = "LessThanOrEqualToThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_appautoscaling_policy.queue_in[0].arn]
+
+  metric_query {
+    id          = "pending"
+    expression  = join(" + ", keys(local.queue_metrics))
+    label       = "Mensajes visibles, en curso y demorados"
+    return_data = true
+  }
+
+  dynamic "metric_query" {
+    for_each = local.queue_metrics
+    content {
+      id = metric_query.key
+      metric {
+        namespace   = "AWS/SQS"
+        metric_name = metric_query.value
+        dimensions  = { QueueName = var.queue_scaling.queue_name }
+        period      = 60
+        stat        = "Maximum"
+      }
+    }
   }
 }

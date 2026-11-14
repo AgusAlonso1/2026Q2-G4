@@ -37,15 +37,15 @@ type fuentePeriodo struct {
 
 func (s *Servicio) asientosDePeriodo(ctx context.Context, cuenta *int64, periodo time.Time) (fuentePeriodo, error) {
 	fuente := fuentePeriodo{Movimientos: []Movimiento{}}
-	origen, clave, err := s.recorrerPeriodo(ctx, cuenta, periodo, func(m Movimiento) error {
-		fuente.Movimientos = append(fuente.Movimientos, m)
+	origen, clave, err := s.recorrerPeriodo(ctx, cuenta, periodo, func(m movimientoConAlias) error {
+		fuente.Movimientos = append(fuente.Movimientos, m.Movimiento)
 		return nil
 	})
 	fuente.Origen, fuente.Clave = origen, clave
 	return fuente, err
 }
 
-func (s *Servicio) recorrerPeriodo(ctx context.Context, cuenta *int64, periodo time.Time, fn func(Movimiento) error) (string, string, error) {
+func (s *Servicio) recorrerPeriodo(ctx context.Context, cuenta *int64, periodo time.Time, fn func(movimientoConAlias) error) (string, string, error) {
 	etiqueta := periodo.Format("2006-01")
 
 	var clave *string
@@ -78,7 +78,7 @@ func (s *Servicio) recorrerPeriodo(ctx context.Context, cuenta *int64, periodo t
 
 	for _, p := range partes {
 		lectura, err := s.lector.Recorrer(ctx, p.clave, p.bytes, cuenta, func(f archivado.Fila) error {
-			return fn(Movimiento{
+			return fn(movimientoConAlias{Movimiento: Movimiento{
 				Periodo:       periodo,
 				CuentaID:      f.CuentaID,
 				OrdenID:       f.OrdenID,
@@ -86,7 +86,7 @@ func (s *Servicio) recorrerPeriodo(ctx context.Context, cuenta *int64, periodo t
 				MontoCentavos: f.MontoCentavos,
 				Tramo:         f.Tramo,
 				CreadoEn:      f.CreadoEn,
-			})
+			}})
 		})
 		if errors.Is(err, objetos.ErrNoExiste) {
 			return "", "", fmt.Errorf("el periodo %s figura archivado en %s pero el objeto no esta", etiqueta, p.clave)
@@ -152,20 +152,24 @@ func (s *Servicio) MovimientosDePeriodo(ctx context.Context, cuentaID int64, per
 	}, nil
 }
 
-func (s *Servicio) recorrerBase(ctx context.Context, cuenta *int64, periodo time.Time, fn func(Movimiento) error) error {
+func (s *Servicio) recorrerBase(ctx context.Context, cuenta *int64, periodo time.Time, fn func(movimientoConAlias) error) error {
 	filas, err := s.pool.Query(ctx, `
-		SELECT periodo, cuenta_id, orden_id, contraparte_id, monto_centavos, tramo, creado_en
-		FROM asientos
-		WHERE periodo = $1 AND ($2::bigint IS NULL OR cuenta_id = $2)
-		ORDER BY cuenta_id, creado_en, id`, periodo, cuenta)
+		SELECT a.periodo, a.cuenta_id, a.orden_id, a.contraparte_id, a.monto_centavos, a.tramo, a.creado_en,
+		       coalesce(propia.alias, '#' || a.cuenta_id), coalesce(otra.alias, '#' || a.contraparte_id)
+		FROM asientos a
+		LEFT JOIN cuentas propia ON propia.id = a.cuenta_id
+		LEFT JOIN cuentas otra ON otra.id = a.contraparte_id
+		WHERE a.periodo = $1 AND ($2::bigint IS NULL OR a.cuenta_id = $2)
+		ORDER BY a.cuenta_id, a.creado_en, a.id`, periodo, cuenta)
 	if err != nil {
 		return err
 	}
 	defer filas.Close()
 
 	for filas.Next() {
-		var m Movimiento
-		if err := filas.Scan(&m.Periodo, &m.CuentaID, &m.OrdenID, &m.ContraparteID, &m.MontoCentavos, &m.Tramo, &m.CreadoEn); err != nil {
+		var m movimientoConAlias
+		if err := filas.Scan(&m.Periodo, &m.CuentaID, &m.OrdenID, &m.ContraparteID, &m.MontoCentavos, &m.Tramo, &m.CreadoEn,
+			&m.alias, &m.aliasContraparte); err != nil {
 			return err
 		}
 		if err := fn(m); err != nil {

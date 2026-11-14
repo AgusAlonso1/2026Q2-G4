@@ -95,25 +95,35 @@ func (s *Servicio) VerificarCierre(ctx context.Context) (*Cierre, error) {
 
 type EntradaSemilla struct {
 	Periodo       string `json:"periodo"`
+	Meses         int    `json:"meses"`
 	OrigenID      int64  `json:"origen_id"`
 	DestinoID     int64  `json:"destino_id"`
 	Cantidad      int    `json:"cantidad"`
 	MontoCentavos int64  `json:"monto_centavos"`
 }
 
-func (s *Servicio) SembrarPeriodo(ctx context.Context, e EntradaSemilla) (int, error) {
-	periodo, err := time.Parse("2006-01", e.Periodo)
+type ResultadoSemilla struct {
+	Transferencias int      `json:"transferencias"`
+	Periodos       []string `json:"periodos"`
+}
+
+func (s *Servicio) SembrarPeriodo(ctx context.Context, e EntradaSemilla) (ResultadoSemilla, error) {
+	var res ResultadoSemilla
+	ultimo, err := time.Parse("2006-01", e.Periodo)
 	if err != nil {
-		return 0, apierr.Invalido("periodo tiene que tener formato AAAA-MM")
+		return res, apierr.Invalido("periodo tiene que tener formato AAAA-MM")
+	}
+	if e.Meses == 0 {
+		e.Meses = 1
+	}
+	if e.Meses < 1 || e.Meses > 24 {
+		return res, apierr.Invalido("meses tiene que estar entre 1 y 24")
 	}
 	if e.Cantidad <= 0 || e.Cantidad > 1000 {
-		return 0, apierr.Invalido("cantidad tiene que estar entre 1 y 1000")
+		return res, apierr.Invalido("cantidad tiene que estar entre 1 y 1000")
 	}
 	if e.MontoCentavos <= 0 {
-		return 0, apierr.Invalido("monto_centavos tiene que ser positivo")
-	}
-	if err := pg.AsegurarParticion(ctx, s.pool, periodo); err != nil {
-		return 0, err
+		return res, apierr.Invalido("monto_centavos tiene que ser positivo")
 	}
 
 	var saldo int64
@@ -123,20 +133,38 @@ func (s *Servicio) SembrarPeriodo(ctx context.Context, e EntradaSemilla) (int, e
 		FROM saldos s JOIN cuentas c ON c.id = s.cuenta_id
 		WHERE s.cuenta_id = $1`, e.OrigenID).Scan(&saldo, &permiteNegativo)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, apierr.NoEncontrado("no existe la cuenta %d", e.OrigenID)
+		return res, apierr.NoEncontrado("no existe la cuenta %d", e.OrigenID)
 	}
 	if err != nil {
-		return 0, err
+		return res, err
 	}
-	if total := e.MontoCentavos * int64(e.Cantidad); !permiteNegativo && saldo < total {
-		return 0, apierr.Rechazado("fondos_insuficientes",
+	cuantas := e.Cantidad * e.Meses
+	if total := e.MontoCentavos * int64(cuantas); !permiteNegativo && saldo < total {
+		return res, apierr.Rechazado("fondos_insuficientes",
 			"sembrar %d transferencias de %d centavos necesita %d y la cuenta %d tiene %d",
-			e.Cantidad, e.MontoCentavos, total, e.OrigenID, saldo)
+			cuantas, e.MontoCentavos, total, e.OrigenID, saldo)
 	}
 
+	for m := e.Meses - 1; m >= 0; m-- {
+		periodo := ultimo.AddDate(0, -m, 0)
+		hechas, err := s.sembrarMes(ctx, periodo, e)
+		res.Transferencias += hechas
+		if err != nil {
+			return res, err
+		}
+		res.Periodos = append(res.Periodos, periodo.Format("2006-01"))
+	}
+	return res, nil
+}
+
+func (s *Servicio) sembrarMes(ctx context.Context, periodo time.Time, e EntradaSemilla) (int, error) {
+	if err := pg.AsegurarParticion(ctx, s.pool, periodo); err != nil {
+		return 0, err
+	}
+	etiqueta := periodo.Format("2006-01")
 	hechas := 0
 	for i := 0; i < e.Cantidad; i++ {
-		clave := fmt.Sprintf("semilla:%s:%d:%d", e.Periodo, e.OrigenID, i)
+		clave := fmt.Sprintf("semilla:%s:%d:%d", etiqueta, e.OrigenID, i)
 		err := pg.EnTx(ctx, s.pool, func(tx pgx.Tx) error {
 			id, err := insertarOrden(ctx, tx, nuevaOrden{
 				Tipo:           TipoTransferencia,

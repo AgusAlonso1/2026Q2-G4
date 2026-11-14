@@ -13,6 +13,7 @@ import (
 	"ledger/internal/apierr"
 	"ledger/internal/archivado"
 	"ledger/internal/avisos"
+	"ledger/internal/cola"
 	"ledger/internal/objetos"
 	"ledger/internal/pg"
 	"ledger/internal/proveedor"
@@ -74,6 +75,11 @@ type Servicio struct {
 	exportaciones chan struct{}
 	avisos        *avisos.Avisador
 	appURL        string
+
+	cola                *cola.Cola
+	dlq                 *cola.Cola
+	intentosExportacion int
+	visibilidadCola     time.Duration
 }
 
 func Nuevo(ctx context.Context, pool *pgxpool.Pool, prov *proveedor.Cliente, obj objetos.Almacen, notif *webhook.Notificador, conciliacionIntervalo time.Duration, proveedorPorDefecto string) (*Servicio, error) {
@@ -88,6 +94,8 @@ func Nuevo(ctx context.Context, pool *pgxpool.Pool, prov *proveedor.Cliente, obj
 		internasPorID:         map[int64]bool{},
 		conciliacionIntervalo: conciliacionIntervalo,
 		exportaciones:         make(chan struct{}, 1),
+		intentosExportacion:   3,
+		visibilidadCola:       2 * time.Minute,
 	}
 
 	filas, err := pool.Query(ctx, `SELECT alias, id FROM cuentas WHERE tipo = 'interna'`)
@@ -113,6 +121,17 @@ func Nuevo(ctx context.Context, pool *pgxpool.Pool, prov *proveedor.Cliente, obj
 		}
 	}
 	return s, nil
+}
+
+func (s *Servicio) ConCola(c, dlq *cola.Cola, intentos int, visibilidad time.Duration) *Servicio {
+	s.cola, s.dlq = c, dlq
+	if intentos > 0 {
+		s.intentosExportacion = intentos
+	}
+	if visibilidad > 0 {
+		s.visibilidadCola = visibilidad
+	}
+	return s
 }
 
 func (s *Servicio) ConAvisos(a *avisos.Avisador, appURL string) *Servicio {

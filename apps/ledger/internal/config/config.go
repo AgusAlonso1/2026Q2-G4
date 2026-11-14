@@ -54,38 +54,51 @@ type Config struct {
 
 	TitularesTopicARN string
 	AppURL            string
+
+	ExportacionesCola        string
+	ExportacionesDLQ         string
+	ExportacionesIntentos    int
+	ExportacionesVisibilidad time.Duration
+
+	ExportacionesConsumidores int
 }
 
 func Cargar() (Config, error) {
 	c := Config{
-		DBURL:                  os.Getenv("DB_URL"),
-		Puerto:                 texto("APP_PORT", "8080"),
-		Bucket:                 os.Getenv("S3_BUCKET"),
-		Region:                 texto("AWS_REGION", "us-east-1"),
-		ObjetosDir:             os.Getenv("OBJETOS_DIR"),
-		ProveedorURL:           os.Getenv("PROVEEDOR_URL"),
-		ProveedorTimeout:       duracion("PROVEEDOR_TIMEOUT", 10*time.Second),
-		ProveedorClave:         os.Getenv("PROVEEDOR_API_KEY"),
-		CorsOrigenes:           texto("CORS_ORIGENES", "*"),
-		CognitoIssuer:          os.Getenv("COGNITO_ISSUER"),
-		CognitoClientID:        os.Getenv("COGNITO_CLIENT_ID"),
-		AuthAbierta:            os.Getenv("AUTH_ABIERTA") == "1",
-		MockClave:              os.Getenv("MOCK_API_KEY"),
-		MockDemoraSinRespuesta: duracion("MOCK_DEMORA_SIN_RESPUESTA", 30*time.Second),
-		MockAbierto:            os.Getenv("MOCK_ABIERTO") == "1",
-		AdminClave:             os.Getenv("ADMIN_API_KEY"),
-		AdminAbierto:           os.Getenv("ADMIN_ABIERTO") == "1",
-		Bienvenida:             int64(entero("SALDO_BIENVENIDA_CENTAVOS", 5000000)),
-		ConciliacionIntervalo:  duracion("CONCILIACION_INTERVALO", 30*time.Second),
-		SNSTopicARN:            os.Getenv("SNS_TOPIC_ARN"),
-		WebhookSecreto:         os.Getenv("WEBHOOK_SECRET"),
-		RetencionMeses:         entero("ARCHIVADO_RETENCION_MESES", 12),
-		ArchivadoIntervalo:     duracion("ARCHIVADO_INTERVALO", 30*time.Second),
-		FilasPorParte:          int64(entero("ARCHIVADO_FILAS_POR_PARTE", 0)),
-		FilasPorBloque:         int64(entero("ARCHIVADO_FILAS_POR_BLOQUE", 0)),
-		Paralelismo:            entero("ARCHIVADO_PARALELISMO", 0),
-		TitularesTopicARN:      os.Getenv("TITULARES_TOPIC_ARN"),
-		AppURL:                 os.Getenv("APP_URL"),
+		DBURL:                    os.Getenv("DB_URL"),
+		Puerto:                   texto("APP_PORT", "8080"),
+		Bucket:                   os.Getenv("S3_BUCKET"),
+		Region:                   texto("AWS_REGION", "us-east-1"),
+		ObjetosDir:               os.Getenv("OBJETOS_DIR"),
+		ProveedorURL:             os.Getenv("PROVEEDOR_URL"),
+		ProveedorTimeout:         duracion("PROVEEDOR_TIMEOUT", 10*time.Second),
+		ProveedorClave:           os.Getenv("PROVEEDOR_API_KEY"),
+		CorsOrigenes:             texto("CORS_ORIGENES", "*"),
+		CognitoIssuer:            os.Getenv("COGNITO_ISSUER"),
+		CognitoClientID:          os.Getenv("COGNITO_CLIENT_ID"),
+		AuthAbierta:              os.Getenv("AUTH_ABIERTA") == "1",
+		MockClave:                os.Getenv("MOCK_API_KEY"),
+		MockDemoraSinRespuesta:   duracion("MOCK_DEMORA_SIN_RESPUESTA", 30*time.Second),
+		MockAbierto:              os.Getenv("MOCK_ABIERTO") == "1",
+		AdminClave:               os.Getenv("ADMIN_API_KEY"),
+		AdminAbierto:             os.Getenv("ADMIN_ABIERTO") == "1",
+		Bienvenida:               int64(entero("SALDO_BIENVENIDA_CENTAVOS", 5000000)),
+		ConciliacionIntervalo:    duracion("CONCILIACION_INTERVALO", 30*time.Second),
+		SNSTopicARN:              os.Getenv("SNS_TOPIC_ARN"),
+		WebhookSecreto:           os.Getenv("WEBHOOK_SECRET"),
+		RetencionMeses:           entero("ARCHIVADO_RETENCION_MESES", 12),
+		ArchivadoIntervalo:       duracion("ARCHIVADO_INTERVALO", 30*time.Second),
+		FilasPorParte:            int64(entero("ARCHIVADO_FILAS_POR_PARTE", 0)),
+		FilasPorBloque:           int64(entero("ARCHIVADO_FILAS_POR_BLOQUE", 0)),
+		Paralelismo:              entero("ARCHIVADO_PARALELISMO", 0),
+		TitularesTopicARN:        os.Getenv("TITULARES_TOPIC_ARN"),
+		AppURL:                   os.Getenv("APP_URL"),
+		ExportacionesCola:        os.Getenv("EXPORTACIONES_QUEUE_URL"),
+		ExportacionesDLQ:         os.Getenv("EXPORTACIONES_DLQ_URL"),
+		ExportacionesIntentos:    entero("EXPORTACIONES_INTENTOS", 3),
+		ExportacionesVisibilidad: duracion("EXPORTACIONES_VISIBILIDAD", 2*time.Minute),
+
+		ExportacionesConsumidores: entero("EXPORTACIONES_CONSUMIDORES", 2),
 	}
 	if c.DBURL == "" {
 		return c, fmt.Errorf("falta DB_URL")
@@ -94,6 +107,12 @@ func Cargar() (Config, error) {
 		return c, fmt.Errorf("falta S3_BUCKET (o OBJETOS_DIR para correr local)")
 	}
 
+	if c.ExportacionesIntentos < 1 || c.ExportacionesIntentos > 10 {
+		return c, fmt.Errorf("EXPORTACIONES_INTENTOS tiene que estar entre 1 y 10")
+	}
+	if c.ExportacionesVisibilidad < 30*time.Second {
+		return c, fmt.Errorf("EXPORTACIONES_VISIBILIDAD tiene que ser de al menos 30s")
+	}
 	if c.Bienvenida < 0 {
 		return c, fmt.Errorf("SALDO_BIENVENIDA_CENTAVOS no puede ser negativo")
 	}
@@ -129,6 +148,19 @@ func entero(clave string, porDefecto int) int {
 		return porDefecto
 	}
 	return n
+}
+
+func (c Config) ValidarExportador() error {
+	if c.ExportacionesCola == "" {
+		return fmt.Errorf("falta EXPORTACIONES_QUEUE_URL: el exportador consume esa cola")
+	}
+	if c.ExportacionesDLQ == "" {
+		return fmt.Errorf("falta EXPORTACIONES_DLQ_URL: ahi van las exportaciones que agotan los reintentos")
+	}
+	if c.ExportacionesConsumidores < 1 || c.ExportacionesConsumidores > 10 {
+		return fmt.Errorf("EXPORTACIONES_CONSUMIDORES tiene que estar entre 1 y 10")
+	}
+	return nil
 }
 
 func (c Config) ValidarAPI() error {

@@ -29,7 +29,7 @@ output "website_url" {
 }
 
 output "db_endpoint" {
-  description = "Hostname de RDS. Sólo se alcanza desde la API y el archivador."
+  description = "Hostname de RDS. Sólo se alcanza desde la API, el archivador y el exportador."
   value       = module.database.address
 }
 
@@ -55,18 +55,20 @@ output "ecr_repository_url" {
 }
 
 output "ecs_cluster_name" {
-  description = "Cluster de ECS de la API y el archivador."
+  description = "Cluster de ECS de la API, el archivador y el exportador."
   value       = aws_ecs_cluster.this.name
 }
 
 output "events" {
-  description = "Eventos del ledger: topic donde publica la API, cola y DLQ del webhook, topic de avisos a titulares y topic de alertas."
+  description = "Eventos del ledger: topic donde publica la API, cola y DLQ del webhook, cola y DLQ de las exportaciones, topic de avisos a titulares y topic de alertas."
   value = {
     topic_arn           = module.events.topic_arn
     titulares_topic_arn = module.events.titulares_topic_arn
     alerts_topic_arn    = module.events.alerts_topic_arn
     webhook_queue_url   = module.events.webhook_queue_url
     webhook_dlq_url     = module.events.webhook_dlq_url
+    exports_queue_url   = module.events.exports_queue_url
+    exports_dlq_url     = module.events.exports_dlq_url
   }
 }
 

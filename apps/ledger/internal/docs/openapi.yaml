@@ -489,16 +489,21 @@ paths:
       tags: [historico]
       summary: Exportar el histórico de un rango de meses
       description: |
-        Registra la solicitud y responde enseguida con la exportación `pendiente`. La arma un
-        proceso en segundo plano, que cruza períodos que están en línea con períodos ya
-        archivados y deja el archivo en S3. El rango se acota a 24 meses.
+        Registra la solicitud, la manda a la cola de exportaciones y responde enseguida con la
+        exportación `pendiente`. La arma en segundo plano el exportador, un servicio aparte que
+        escala con la cola: cruza períodos que están en línea con períodos ya archivados y deja
+        el archivo en S3. Si el exportador estaba en cero, la primera puede tardar varios
+        minutos. Si falla, se reintenta con espera creciente, y al agotar los intentos (3, salvo
+        que se configure otro valor) queda `fallida`. Sin cola configurada (local), la arma la
+        propia API. El rango se acota a 24 meses.
 
         El archivo es un CSV en UTF-8 con BOM, separado por `;`, con las columnas `Fecha` (hora
         de Argentina), `Cuenta`, `Operación`, `Contraparte` (alias), `Monto` (pesos, con coma
         decimal) y `Orden`.
 
-        Cuando queda `lista`, si la exportación es de una cuenta con titular suscripto, el
-        titular recibe un mail que avisa que está lista, con el link a la app (no al archivo).
+        Cuando queda `lista` o `fallida`, si la exportación es de una cuenta con titular
+        suscripto, el titular recibe un mail que se lo avisa, con el link a la app (no al
+        archivo).
         Se descarga con `GET /exportaciones/{id}/descarga`.
       operationId: exportar
       requestBody:
@@ -765,6 +770,9 @@ paths:
         Escribe por el mismo camino que la liquidación normal —orden, par de asientos y
         saldos en la misma transacción—, sólo que con el período forzado. No es un atajo
         que saltea el ledger: si lo fuera, el archivado no probaría nada.
+
+        Con `meses` siembra `periodo` y los `meses - 1` anteriores, `cantidad`
+        transferencias en cada uno. El saldo del origen tiene que alcanzar para todas.
       operationId: semilla
       requestBody:
         required: true
@@ -774,7 +782,8 @@ paths:
               type: object
               required: [periodo, origen_id, destino_id, cantidad, monto_centavos]
               properties:
-                periodo: { type: string, pattern: '^\d{4}-\d{2}$' }
+                periodo: { type: string, pattern: '^\d{4}-\d{2}$', description: El último mes a sembrar. }
+                meses: { type: integer, minimum: 1, maximum: 24, default: 1 }
                 origen_id: { type: integer, format: int64 }
                 destino_id: { type: integer, format: int64 }
                 cantidad: { type: integer, minimum: 1, maximum: 1000 }
@@ -783,6 +792,13 @@ paths:
         '401': { $ref: '#/components/responses/AdminNoAutorizado' }
         '201':
           description: Generados.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transferencias: { type: integer }
+                  periodos: { type: array, items: { type: string }, example: ['2026-08', '2026-09', '2026-10'] }
         '400': { $ref: '#/components/responses/Invalido' }
 
   /servicio-mock/egresos:

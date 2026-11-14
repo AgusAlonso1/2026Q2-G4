@@ -6,7 +6,19 @@ Eventos del ledger. La API publica cada orden terminada en el topic `events`, qu
   reintentos son de SQS; lo que los agota queda en la DLQ y dispara una alarma.
 - **Alertas:** topic aparte, con suscripciones de email para operación.
 - **Titulares:** topic `titulares`, con una suscripción de email por titular. Lo usa la API para
-  avisarle a cada uno lo suyo (hoy, que su exportación está lista).
+  avisarle a cada uno lo suyo (hoy, que su exportación está lista o que no se pudo armar).
+
+Además, el módulo tiene la cola de las exportaciones, que no cuelga de `events`:
+
+- **Exportaciones:** SQS `exports` (+DLQ). La API manda el id de cada exportación pedida y la
+  consume el exportador, que escala con esta cola. El exportador reintenta con espera creciente
+  hasta `exports_max_attempts`, y la exportación que los agota la manda a la DLQ. La cola, por
+  su cuenta, pasa a la DLQ lo que se recibió `exports_max_attempts + 5` veces sin resolverse.
+  Dos alarmas cubren la DLQ: `exports-dlq-sent` avisa por cada exportación que manda el
+  exportador, aunque la DLQ ya tenga otras, y `exports-dlq`, como la del webhook, mientras la
+  DLQ tenga mensajes, también los que pasó la cola. Otra alarma avisa si el mensaje más viejo
+  lleva más de `exports_max_age_seconds` (una hora) en la cola: el exportador no lo tomó o
+  lleva todo ese tiempo con él.
 
 ## Contrato del evento
 
@@ -65,6 +77,9 @@ No modules.
 | Name | Type |
 |------|------|
 | [aws_cloudwatch_log_group.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_log_group) | resource |
+| [aws_cloudwatch_metric_alarm.exports_age](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
+| [aws_cloudwatch_metric_alarm.exports_dlq](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
+| [aws_cloudwatch_metric_alarm.exports_dlq_sent](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
 | [aws_cloudwatch_metric_alarm.webhook_dlq](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/cloudwatch_metric_alarm) | resource |
 | [aws_lambda_event_source_mapping.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_event_source_mapping) | resource |
 | [aws_lambda_function.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function) | resource |
@@ -75,6 +90,8 @@ No modules.
 | [aws_sns_topic.titulares](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic) | resource |
 | [aws_sns_topic_subscription.alerts](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic_subscription) | resource |
 | [aws_sns_topic_subscription.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic_subscription) | resource |
+| [aws_sqs_queue.exports](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue) | resource |
+| [aws_sqs_queue.exports_dlq](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue) | resource |
 | [aws_sqs_queue.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue) | resource |
 | [aws_sqs_queue.webhook_dlq](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue) | resource |
 | [aws_sqs_queue_policy.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue_policy) | resource |
@@ -84,6 +101,9 @@ No modules.
 
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
+| <a name="input_exports_max_age_seconds"></a> [exports\_max\_age\_seconds](#input\_exports\_max\_age\_seconds) | Antigüedad, en segundos, del mensaje más viejo de la cola de exportaciones a partir de la cual se avisa a operación: con el exportador en marcha, nada espera tanto. | `number` | `3600` | no |
+| <a name="input_exports_max_attempts"></a> [exports\_max\_attempts](#input\_exports\_max\_attempts) | Cuántas veces se intenta armar una exportación antes de marcarla fallida; el exportador manda las fallidas a la DLQ. La cola pasa a la DLQ por su cuenta lo que se recibe cinco veces más que esto sin resolverse (por ejemplo, una tarea que muere una y otra vez con el mismo mensaje). Tiene que coincidir con el que usan la API y el exportador. | `number` | n/a | yes |
+| <a name="input_exports_visibility_timeout_seconds"></a> [exports\_visibility\_timeout\_seconds](#input\_exports\_visibility\_timeout\_seconds) | Segundos que un mensaje de la cola de exportaciones queda oculto mientras una tarea lo atiende. La tarea la extiende mientras trabaja, así que acota cuánto tarda en reaparecer si la tarea muere. Tiene que coincidir con el que usan la API y el exportador. | `number` | n/a | yes |
 | <a name="input_kms_key_arn"></a> [kms\_key\_arn](#input\_kms\_key\_arn) | Clave KMS de los topics, las colas, los logs y el secreto. Su política tiene que habilitar a sns.amazonaws.com y cloudwatch.amazonaws.com. | `string` | n/a | yes |
 | <a name="input_lambda_role_arn"></a> [lambda\_role\_arn](#input\_lambda\_role\_arn) | Rol de ejecución de la Lambda. En AWS Academy, el LabRole preexistente. | `string` | n/a | yes |
 | <a name="input_lambda_runtime"></a> [lambda\_runtime](#input\_lambda\_runtime) | Runtime de la Lambda. Node: el SDK de AWS viene en el runtime, sin dependencias ni paso de build. | `string` | `"nodejs22.x"` | no |
@@ -100,7 +120,10 @@ No modules.
 
 | Name | Description |
 |------|-------------|
-| <a name="output_alerts_topic_arn"></a> [alerts\_topic\_arn](#output\_alerts\_topic\_arn) | Topic de alertas de operación: la alarma de la DLQ del webhook. |
+| <a name="output_alerts_topic_arn"></a> [alerts\_topic\_arn](#output\_alerts\_topic\_arn) | Topic de alertas de operación: las alarmas de las DLQ del webhook y de las exportaciones, y la de antigüedad de la cola de exportaciones. |
+| <a name="output_exports_dlq_url"></a> [exports\_dlq\_url](#output\_exports\_dlq\_url) | DLQ de las exportaciones (EXPORTACIONES\_DLQ\_URL): las que agotaron los reintentos y los mensajes que la cola no pudo entregar. |
+| <a name="output_exports_queue_name"></a> [exports\_queue\_name](#output\_exports\_queue\_name) | Nombre de la cola de exportaciones: la dimensión de las métricas con las que escala el exportador. |
+| <a name="output_exports_queue_url"></a> [exports\_queue\_url](#output\_exports\_queue\_url) | Cola de las exportaciones pendientes (EXPORTACIONES\_QUEUE\_URL): la API encola cada pedido y la consume el exportador. |
 | <a name="output_titulares_topic_arn"></a> [titulares\_topic\_arn](#output\_titulares\_topic\_arn) | Topic de los avisos por mail a cada titular (TITULARES\_TOPIC\_ARN): cada suscripción filtra por su titular. |
 | <a name="output_topic_arn"></a> [topic\_arn](#output\_topic\_arn) | Topic donde la API publica cada orden terminada (SNS\_TOPIC\_ARN). |
 | <a name="output_webhook_dlq_url"></a> [webhook\_dlq\_url](#output\_webhook\_dlq\_url) | DLQ del webhook: los avisos que agotaron los reintentos. |

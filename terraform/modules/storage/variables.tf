@@ -28,9 +28,20 @@ variable "transitions" {
       prefix = "transaction-history/"
       transitions = [
         { days = 30, storage_class = "STANDARD_IA" },
-        { days = 365, storage_class = "GLACIER" },
+        # Instant Retrieval y no Flexible: Athena no lee objetos en GLACIER (los saltea sin
+        # avisar) y la API tampoco podría armar el extracto sin restaurarlos antes.
+        { days = 365, storage_class = "GLACIER_IR" },
       ]
     }
   }
 }
 
+
+variable "expirations" {
+  description = "Prefijos cuyos objetos expiran después de unos días (por ejemplo, los resultados de Athena). Con el versionado, expirar los deja como versión anterior, que se borra a los noncurrent_version_days."
+  type = map(object({
+    prefix = string
+    days   = number
+  }))
+  default = {}
+}

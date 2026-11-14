@@ -2,6 +2,8 @@ locals {
   name_prefix = var.project_name
   api_url     = "http://${module.load_balancer.dns_name}"
 
+  athena_results_prefix = "athena-results/"
+
   common_tags = {
     Project   = "nucleo-ledger"
     TP        = "tp3"

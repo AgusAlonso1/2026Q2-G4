@@ -13,6 +13,19 @@ module "storage" {
 
   name_prefix = local.name_prefix
   kms_key_arn = aws_kms_key.this.arn
+
+  expirations = {
+    "athena-results" = { prefix = local.athena_results_prefix, days = 7 }
+  }
+}
+
+module "analytics" {
+  source = "../modules/analytics"
+
+  name_prefix    = local.name_prefix
+  bucket_name    = module.storage.bucket_name
+  kms_key_arn    = aws_kms_key.this.arn
+  results_prefix = local.athena_results_prefix
 }
 
 module "website" {

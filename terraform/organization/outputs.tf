@@ -19,7 +19,7 @@ output "nat_public_ip" {
 }
 
 output "bucket_name" {
-  description = "Bucket del proyecto: archivo del ledger."
+  description = "Bucket del proyecto: archivo del ledger, exportaciones y resultados de Athena."
   value       = module.storage.bucket_name
 }
 
@@ -66,5 +66,16 @@ output "events" {
     alerts_topic_arn  = module.events.alerts_topic_arn
     webhook_queue_url = module.events.webhook_queue_url
     webhook_dlq_url   = module.events.webhook_dlq_url
+  }
+}
+
+output "analytics" {
+  description = "Consultas sobre el archivo con Athena: elegir el workgroup en el editor y abrir sus consultas guardadas."
+  value = {
+    workgroup        = module.analytics.workgroup_name
+    database         = module.analytics.database_name
+    table            = module.analytics.table_name
+    results_location = module.analytics.results_location
+    console_url      = "https://${var.aws_region}.console.aws.amazon.com/athena/home?region=${var.aws_region}#/query-editor"
   }
 }

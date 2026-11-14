@@ -1,7 +1,8 @@
 # storage
 
-Bucket S3 del proyecto: guarda los meses archivados del ledger (`transaction-history/`) y las
-exportaciones (`exports/`). Se accede por el gateway endpoint, sin pasar por el NAT. Se cifra con la clave KMS del proyecto (SSE-KMS) y su
+Bucket S3 del proyecto: guarda los meses archivados del ledger (`transaction-history/`), las
+exportaciones (`exports/`) y los resultados de Athena (`athena-results/`, que expiran por
+`expirations`). Se accede por el gateway endpoint, sin pasar por el NAT. Se cifra con la clave KMS del proyecto (SSE-KMS) y su
 política rechaza los pedidos que no usan HTTPS.
 
 El bucket no lo crea el módulo sino [`scripts/buckets.sh`](../../../scripts/buckets.sh), antes del
@@ -45,7 +46,7 @@ No modules.
 | <a name="input_kms_key_arn"></a> [kms\_key\_arn](#input\_kms\_key\_arn) | Clave KMS con la que se cifran los objetos (SSE-KMS). Quien lee o escribe necesita permiso sobre ella. | `string` | n/a | yes |
 | <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | Prefijo del nombre del bucket. | `string` | n/a | yes |
 | <a name="input_noncurrent_version_days"></a> [noncurrent\_version\_days](#input\_noncurrent\_version\_days) | Dias que se conserva una versión remplazada o borrada antes de eliminarla. | `number` | `30` | no |
-| <a name="input_transitions"></a> [transitions](#input\_transitions) | Transiciones de clases de almacenamiento. | <pre>map(object({<br/>    prefix = string<br/>    transitions = list(object({<br/>      days          = number<br/>      storage_class = string<br/>    }))<br/>  }))</pre> | <pre>{<br/>  "transaction-history": {<br/>    "prefix": "transaction-history/",<br/>    "transitions": [<br/>      {<br/>        "days": 30,<br/>        "storage_class": "STANDARD_IA"<br/>      },<br/>      {<br/>        "days": 365,<br/>        "storage_class": "GLACIER"<br/>      }<br/>    ]<br/>  }<br/>}</pre> | no |
+| <a name="input_transitions"></a> [transitions](#input\_transitions) | Transiciones de clases de almacenamiento. | <pre>map(object({<br/>    prefix = string<br/>    transitions = list(object({<br/>      days          = number<br/>      storage_class = string<br/>    }))<br/>  }))</pre> | <pre>{<br/>  "transaction-history": {<br/>    "prefix": "transaction-history/",<br/>    "transitions": [<br/>      {<br/>        "days": 30,<br/>        "storage_class": "STANDARD_IA"<br/>      },<br/>      {<br/>        "days": 365,<br/>        "storage_class": "GLACIER_IR"<br/>      }<br/>    ]<br/>  }<br/>}</pre> | no |
 
 ## Outputs
 

@@ -52,6 +52,14 @@ module "auth" {
   kms_key_arn         = aws_kms_key.this.arn
 }
 
+module "waf" {
+  source = "../modules/waf"
+
+  name_prefix  = local.name_prefix
+  resource_arn = module.auth.user_pool_arn
+  kms_key_arn  = aws_kms_key.this.arn
+}
+
 module "database" {
   source = "../modules/database"
 

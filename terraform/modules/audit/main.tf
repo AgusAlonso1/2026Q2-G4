@@ -220,7 +220,10 @@ resource "aws_flow_log" "vpc" {
 # CloudWatch (cómo anda) y CloudTrail (quién hizo qué). LabRole no confía en config.amazonaws.com,
 # así que graba con su rol vinculado al servicio, que AWS Academy sí deja crear.
 
+# Con el provider sin etiquetas: AWS Academy no deja etiquetar el rol (iam:TagRole).
 resource "aws_iam_service_linked_role" "config" {
+  provider = aws.sin_tags
+
   aws_service_name = "config.amazonaws.com"
 }
 

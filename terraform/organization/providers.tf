@@ -16,6 +16,13 @@ provider "aws" {
   }
 }
 
+# Sin default_tags: AWS Academy deja crear roles vinculados a servicios pero no etiquetarlos
+# (iam:TagRole), y el provider etiqueta todo lo que crea. Sólo lo usa el rol de AWS Config.
+provider "aws" {
+  alias  = "sin_tags"
+  region = var.aws_region
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }

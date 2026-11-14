@@ -171,6 +171,10 @@ module "monitoring" {
 
 module "audit" {
   source = "../modules/audit"
+  providers = {
+    aws          = aws
+    aws.sin_tags = aws.sin_tags
+  }
 
   name_prefix      = local.name_prefix
   kms_key_arn      = aws_kms_key.this.arn

@@ -637,8 +637,29 @@ umbrales son variables del módulo.
 El **dashboard** junta, de arriba hacia abajo, el estado de las alarmas, el cómputo (tareas
 corriendo y deseadas, CPU de la API con la línea del objetivo del autoscaling, instancias del
 cluster), la entrada (targets del NLB, latencia p50 y p99, pedidos y 5xx), la base y lo
-asíncrono (la cola y la DLQ del webhook, su Lambda y lo que bloquea el WAF del login). Ahí se ve
-la elasticidad: con carga sube la CPU, después las tareas deseadas y por último las instancias.
+asíncrono (las colas del webhook y de las exportaciones con sus DLQ, la Lambda del webhook y lo
+que bloquea el WAF del login). Ahí se ve la elasticidad: con carga sube la CPU, después las
+tareas deseadas y por último las instancias. `make pico` sube el mínimo de tareas para mostrarlo
+sin generar carga.
+
+### Auditoría y costos
+
+CloudWatch dice cómo anda el sistema; CloudTrail, quién hizo qué. Y AWS Budgets avisa antes de
+que se acabe el crédito. Los dos están en [`modules/audit`](terraform/modules/audit):
+
+- **CloudTrail.** Sin trail, CloudTrail guarda 90 días de eventos de gestión y nada más. El trail
+  `ledger-trail` los deja en un bucket de logs aparte, `ledger-logs-<cuenta>-us-east-1-an`:
+  lo escribe CloudTrail y no la aplicación, y quien lee el archivo del ledger no tiene por qué
+  leer la auditoría. Los logs van cifrados con la clave del proyecto (su política habilita a
+  CloudTrail, sólo para los trails de la cuenta) y con un digest por hora que prueba que nadie
+  los tocó (`enable_log_file_validation`). El primer trail de eventos de gestión es gratis. Es
+  regional porque AWS Academy bloquea las demás regiones, y no va a CloudWatch Logs porque el
+  laboratorio no lo deja. El bucket lo crea `scripts/buckets.sh`, como los otros, y guarda 90 días.
+- **Presupuesto.** AWS Budgets avisa a `NOTIFICATION_EMAILS` cuando lo gastado en el mes pasa el
+  80 % de `budget_limit_usd` (50, el crédito del laboratorio) y cuando el pronóstico pasa el
+  100 %. Sin emails no se crea. Con las `default_tags` del provider (`Project`, `TP`,
+  `ManagedBy`), en una cuenta con varios proyectos el presupuesto y Cost Explorer se filtrarían
+  por proyecto.
 
 ## 8. Frontend
 
@@ -770,7 +791,7 @@ nuevo y Destroy no tendría qué destruir.
 | Requisito | Dónde en este repo |
 |---|---|
 | ≥ 1 módulo externo | `terraform-aws-modules/vpc/aws ~> 6.7` en [`network.tf`](terraform/organization/network.tf) |
-| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `waf`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics`, `monitoring` (12) |
+| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `waf`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics`, `monitoring`, `audit` (13) |
 | ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `floor`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |

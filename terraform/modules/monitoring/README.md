@@ -63,6 +63,11 @@ No modules.
 | <a name="input_db_free_storage_threshold_gb"></a> [db\_free\_storage\_threshold\_gb](#input\_db\_free\_storage\_threshold\_gb) | Espacio libre en el disco de RDS, en GB. El disco es fijo, sin autoescalado de almacenamiento. | `number` | `2` | no |
 | <a name="input_db_instance_identifier"></a> [db\_instance\_identifier](#input\_db\_instance\_identifier) | Identificador de la instancia RDS. | `string` | n/a | yes |
 | <a name="input_errors_5xx_threshold"></a> [errors\_5xx\_threshold](#input\_errors\_5xx\_threshold) | Respuestas 5xx de la API en 5 minutos a partir de las cuales se dispara la alarma. | `number` | `5` | no |
+| <a name="input_exports_dlq_name"></a> [exports\_dlq\_name](#input\_exports\_dlq\_name) | DLQ de las exportaciones. | `string` | n/a | yes |
+| <a name="input_exports_log_group_name"></a> [exports\_log\_group\_name](#input\_exports\_log\_group\_name) | Log group del exportador, para la consulta de errores de los binarios. | `string` | n/a | yes |
+| <a name="input_exports_queue_name"></a> [exports\_queue\_name](#input\_exports\_queue\_name) | Cola SQS de exportaciones. | `string` | n/a | yes |
+| <a name="input_exports_service_name"></a> [exports\_service\_name](#input\_exports\_service\_name) | Servicio de ECS del exportador. | `string` | n/a | yes |
+| <a name="input_external_alarm_names"></a> [external\_alarm\_names](#input\_external\_alarm\_names) | Alarmas que crean otros módulos (las de las colas, en events), para mostrarlas en el panel de alarmas del dashboard. | `list(string)` | `[]` | no |
 | <a name="input_latency_p99_threshold_ms"></a> [latency\_p99\_threshold\_ms](#input\_latency\_p99\_threshold\_ms) | Latencia p99 de la API, en ms, por encima de la cual se dispara la alarma (3 minutos seguidos). No cuenta /health. | `number` | `1000` | no |
 | <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | Prefijo de las alarmas, el dashboard, las métricas y las consultas guardadas. | `string` | n/a | yes |
 | <a name="input_nlb_arn_suffix"></a> [nlb\_arn\_suffix](#input\_nlb\_arn\_suffix) | Sufijo del ARN del NLB (net/<nombre>/<id>): la dimensión LoadBalancer de sus métricas. | `string` | n/a | yes |

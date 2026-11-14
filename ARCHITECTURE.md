@@ -11,12 +11,12 @@ cuenta virtual con la que transfiere a otras cuentas del PSP, ingresa dinero des
 lo retira hacia afuera a través de un proveedor de infraestructura financiera. Cada operación
 se liquida dentro del mismo request, de forma idempotente, contra un ledger de partida doble.
 Lo único diferido es lo que ningún usuario espera: el archivado de los meses viejos a S3 y
-las notificaciones (webhook y mail), que salen por SNS después de responder.
+el webhook de cada orden terminada, que sale por SNS y SQS después de responder.
 
 Restricciones que guían el diseño:
 
 - **AWS Academy**: no se pueden crear usuarios ni roles de IAM. Las instancias usan
-  `LabInstanceProfile` y las tareas de ECS y la Lambda usan `LabRole`. Sólo está habilitada
+  `LabInstanceProfile` y las tareas de ECS y las Lambdas usan `LabRole`. Sólo está habilitada
   `us-east-1`.
 - **Reproducible desde el pipeline**: todo vive en código y se despliega y destruye desde
   GitHub Actions, en cualquier cuenta, sin editar nada. Los nombres que tienen que ser únicos
@@ -296,15 +296,16 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
 
 - **Qué cifra:** los secretos de Secrets Manager, el bucket del archivo (SSE-KMS con *bucket
   key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), el
-  almacenamiento y los backups de RDS, las imágenes de ECR y los logs de ECS, de la Lambda y
-  de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
+  almacenamiento y los backups de RDS, las imágenes de ECR, los topics de SNS, las colas de
+  SQS y los logs de ECS, de las Lambdas y de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
   EBS (`aws/ebs`) y no con la del proyecto: para que Auto Scaling lance instancias con discos
   cifrados con una clave propia, su rol de servicio tendría que figurar en la política de la
   clave.
-- **Quién la usa:** la política nombra tres principales: la cuenta (sin ese permiso la clave
-  quedaría inadministrable), el `LabRole`, sólo para las operaciones de cifrado (nombrado
-  explícitamente para no depender de lo que permita su política de IAM en el laboratorio) y
-  CloudWatch Logs, limitado a los log groups de la cuenta. El permiso de la cuenta delega en
+- **Quién la usa:** la política nombra a la cuenta (sin ese permiso la clave quedaría
+  inadministrable), al `LabRole`, sólo para las operaciones de cifrado (nombrado explícitamente
+  para no depender de lo que permita su política de IAM en el laboratorio), a CloudWatch Logs,
+  limitado a los log groups de la cuenta, y a SNS y CloudWatch, sólo para cifrar y descifrar:
+  SNS escribe en la cola cifrada y CloudWatch publica las alarmas en el topic cifrado. El permiso de la cuenta delega en
   IAM, y la política de IAM del `LabRole` es amplia: en la práctica también puede administrar y
   borrar la clave (ver [Trade-offs](#10-trade-offs)).
 - **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
@@ -366,11 +367,13 @@ sumar una suscripción, sin tocar la API.
   una suscripción nueva pueda filtrar sin leer el cuerpo.
 - **Alertas.** Un topic aparte, `ledger-alerts`, manda por email la alarma de la DLQ a las
   direcciones de `notification_emails` (suscripciones de SNS que cada una confirma).
-- **Red y cifrado.** La API publica por el interface endpoint de SNS, sin pasar por el NAT. Los
-  topics y la cola se cifran con la clave del proyecto, cuya política habilita a SNS (escribe
-  en la cola) y a CloudWatch (publica las alarmas en el topic).
+- **Red y cifrado.** La API publica por el interface endpoint de SNS, sin pasar por el NAT. La
+  Lambda corre fuera de la VPC y hace el POST directo a `webhook_url`. Los topics y las colas
+  se cifran con la clave del proyecto, cuya política habilita a SNS (escribe en la cola) y a
+  CloudWatch (publica las alarmas en el topic).
 - **Sin mails a los titulares.** Se descartó mandarlos por SES porque AWS Academy no habilita
-  SES: el rol del laboratorio no tiene permisos de SES (`ses:GetAccount` da `AccessDenied`).
+  SES: el rol del laboratorio no tiene permisos de SES (`ses:GetAccount` y
+  `ses:VerifyEmailIdentity` dan `AccessDenied`).
 
 ## 8. Frontend
 
@@ -430,22 +433,23 @@ nuevo y Destroy no tendría qué destruir.
 
 - **Un solo NAT**, en la primera AZ. Ahorra el costo de uno por AZ; si esa AZ se cae, las
   tareas de la API de la otra siguen atendiendo y llegando a la base y a los servicios de AWS
-  (por los endpoints), pero no al proveedor, al webhook ni a las claves públicas de Cognito. Las
+  (por los endpoints), pero no al proveedor ni a las claves públicas de Cognito. El webhook no
+  depende del NAT: la Lambda corre fuera de la VPC. Las
   tareas que ya tenían las claves siguen validando sesiones; una tarea nueva no puede hasta que
   vuelva el NAT. Con el proveedor por defecto, el mock de la propia API, las operaciones con el
   proveedor tampoco se completan, porque la API lo llama por el NLB.
-- **Siete interface endpoints**, en las dos AZ: unos USD 0,14 por hora, tres veces el NAT.
+- **Ocho interface endpoints**, en las dos AZ: unos USD 0,16 por hora, más de tres veces el NAT.
   Son el precio de que el archivador no tenga ninguna salida a Internet: la alternativa barata
   es darle ruta al NAT, y entonces el único componente que borra datos del ledger podría
   mandarlos a cualquier lado. También dejan las instancias de la API independientes del NAT
-  para hablar con ECS, ECR y Logs.
+  para hablar con ECS, ECR y Logs, y a las tareas para publicar los eventos en SNS.
 - **La API en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
   certificado. El access token y las claves de operación (`X-Admin-Key`, `X-Mock-Key`) viajan
   en claro entre el navegador y el NLB; el login, en cambio, es HTTPS de punta a punta (Hosted
   UI y API Gateway).
 - **Los secretos siguen en el state de Terraform**, porque los genera Terraform. El state está
   en un bucket privado y cifrado.
-- **`LabRole` para todo**: las tareas, el agente de ECS y la Lambda tienen los permisos del rol
+- **`LabRole` para todo**: las tareas, el agente de ECS y las Lambdas tienen los permisos del rol
   del laboratorio, no unos mínimos por componente. Por eso la separación de custodios de la
   clave KMS no es real: en una cuenta propia cada servicio tendría su rol y la política de la
   clave nombraría sólo a los que la necesitan.
@@ -460,7 +464,7 @@ nuevo y Destroy no tendría qué destruir.
   tiene que poder borrarla sin un apply previo. Mientras está desplegada guarda 7 días de backups
   automáticos, que permiten volver a cualquier punto de ese período (por ejemplo, después de un
   reinicio del ledger).
-- **Sin X-Ray en la Lambda, Performance Insights en RDS ni VPC Flow Logs**, por el laboratorio:
+- **Sin X-Ray en las Lambdas, Performance Insights en RDS ni VPC Flow Logs**, por el laboratorio:
   el usuario de AWS Academy no puede leer las trazas de X-Ray ni las métricas de Performance
   Insights (los dos se pueden activar, pero nadie vería lo que juntan), y la trust policy de
   `LabRole` no incluye a `vpc-flow-logs.amazonaws.com`, así que los Flow Logs sólo podrían ir a

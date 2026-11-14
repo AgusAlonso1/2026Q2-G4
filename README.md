@@ -1,4 +1,4 @@
-# Núcleo Transaccional Elástico — TP3 (Terraform)
+# Núcleo Transaccional Elástico — TP4 (Terraform)
 
 Cloud Computing · ITBA · 2026Q2 · Grupo 4
 
@@ -6,6 +6,7 @@ Núcleo transaccional de un PSP (proveedor de servicios de pago) desplegado en A
 Cada usuario tiene una cuenta virtual con la que transfiere a otras cuentas, ingresa y retira
 dinero hacia el exterior a través de un proveedor; cada operación se liquida dentro del mismo
 request contra un ledger de partida doble en PostgreSQL, y los meses viejos se archivan en S3.
+Cada orden terminada se publica como evento en SNS, y de ahí sale el webhook hacia otro sistema.
 
 La arquitectura detallada, con el porqué de cada decisión y cómo se aplicaron las correcciones de
 las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
@@ -23,12 +24,15 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 4. La API valida el token contra Cognito y liquida cada operación en RDS PostgreSQL Multi-AZ, en
    las subredes de `data`.
 5. Los ingresos y egresos hacia el exterior van al proveedor por el NAT. Por defecto es el
-   proveedor simulado que trae la propia API en `/servicio-mock`. Si hay `webhook_url`, la API
-   avisa ahí cada orden terminada.
-6. Todos los días, en la ventana de archivado, ECS levanta una tarea del archivador en las
+   proveedor simulado que trae la propia API en `/servicio-mock`.
+6. Cuando una orden termina, la API publica un evento en el topic SNS `ledger-events` por el
+   interface endpoint de SNS. El topic lo deja en la cola SQS `ledger-webhook`, y una Lambda lo
+   firma y lo manda a `webhook_url`. Lo que agota los reintentos queda en una DLQ, cuya alarma
+   avisa por mail (topic `ledger-alerts`).
+7. Todos los días, en la ventana de archivado, ECS levanta una tarea del archivador en las
    subredes de `archive`, que no tienen salida a Internet. Mueve a S3 (`transaction-history/`)
    los meses que superan la retención, por el gateway endpoint.
-7. El extracto de un mes archivado lo arma la API leyendo ese objeto de S3; las exportaciones
+8. El extracto de un mes archivado lo arma la API leyendo ese objeto de S3; las exportaciones
    del histórico también quedan en el bucket (`exports/`).
 
 Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions**: el workflow
@@ -269,9 +273,15 @@ Después, entrar por `website_url`:
    ![Operación: estado del despliegue, base y tarea que atendió el pedido](img/operacion.png)
 
 5. **Eventos.** Con `WEBHOOK_URL` cargada, cada orden terminada aparece en *Avisos recibidos*
-   del otro despliegue. Para verlos sin otro equipo, apuntar `WEBHOOK_URL` a la propia API
-   (`<api_url>/webhooks/recibidos`). Lo que hace la Lambda queda en `/aws/lambda/ledger-webhook`
-   de CloudWatch Logs.
+   del otro despliegue, con la firma verificada. Para verlos sin otro equipo, apuntar
+   `WEBHOOK_URL` a la propia API (`<api_url>/webhooks/recibidos`). Lo que hace la Lambda queda
+   en `/aws/lambda/ledger-webhook` de CloudWatch Logs.
+
+   Para ver la DLQ, apuntar `WEBHOOK_URL` a una ruta que no existe (por ejemplo
+   `<api_url>/webhooks/no-existe`), volver a correr Deploy y hacer una transferencia. SQS
+   reintenta una vez por minuto; al quinto fallo el aviso pasa a `ledger-webhook-dlq` y a las
+   direcciones de `NOTIFICATION_EMAILS` les llega la alarma `ledger-webhook-dlq`. Después,
+   volver a la URL correcta y vaciar la DLQ (**SQS → ledger-webhook-dlq → Purge**).
 
 ### 5. Destruir al terminar
 
@@ -354,9 +364,10 @@ y los nombres de las subredes se derivan en [`locals.tf`](terraform/organization
 
 - `aws_vpc_endpoint.s3`: gateway endpoint de S3 en las tablas de `app` y `archive`, con una
   política que sólo deja llegar al bucket del proyecto y al de las capas de ECR.
-- `aws_vpc_endpoint.interface`: un interface endpoint por servicio que necesita el agente de
-  ECS (`ecs`, `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`), en
-  las subredes de `app`, que sólo acepta credenciales de la propia cuenta.
+- `aws_vpc_endpoint.interface`: un interface endpoint por servicio que necesitan el agente de
+  ECS (`ecs`, `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`) y la
+  API para publicar los eventos (`sns`), en las subredes de `app`, que sólo acepta credenciales
+  de la propia cuenta.
 
 **Versión:** `~> 6.7`.
 
@@ -521,7 +532,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
 | `for_each` | `organization/main.tf` (`module "capacity"`, `module "service"`) | Instancias y servicio de ECS para la API y el archivador sin duplicar código |
-| `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesita el agente de ECS |
+| `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesitan el agente de ECS y la API |
 | `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) y un secreto de Secrets Manager por servicio |
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/website/main.tf` | Un objeto de S3 por archivo del frontend |
@@ -563,7 +574,7 @@ el `plan`, no a mitad del apply.
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
 | `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
 | `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |
-| `archive_file` | `modules/auth/main.tf` | El zip de la Lambda del callback |
+| `archive_file` | `modules/auth/main.tf`, `modules/events/main.tf` | El zip de la Lambda del callback y el de la del webhook |
 
 ---
 

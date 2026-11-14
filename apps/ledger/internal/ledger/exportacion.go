@@ -2,7 +2,9 @@ package ledger
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -10,11 +12,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"ledger/internal/apierr"
+	"ledger/internal/cola"
 	"ledger/internal/objetos"
 	"ledger/internal/pg"
 )
@@ -95,15 +99,36 @@ func (s *Servicio) Exportar(ctx context.Context, e EntradaExportacion) (*Exporta
 		return nil, err
 	}
 
-	s.despertarExportaciones()
+	s.encolarExportacion(ctx, id)
 	return s.VerExportacion(ctx, id)
 }
 
 const (
-	leaseExportacion  = 15 * time.Minute
-	vigenciaDescarga  = 15 * time.Minute
-	esperaExportacion = time.Minute
+	vigenciaDescarga   = 15 * time.Minute
+	esperaExportacion  = time.Minute
+	esperaCola         = 20 * time.Second
+	barridoCola        = 5 * time.Minute
+	esperaArchivado    = 5 * time.Minute
+	toleranciaArchivo  = 24 * time.Hour
+	tiempoLimiteAviso  = 10 * time.Second
+	tiempoLimiteCola   = 5 * time.Second
+	maxIntentosSoltado = 10
 )
+
+var errExportacionAjena = errors.New("otra tarea tomo la exportacion")
+
+type reclamo struct {
+	id         int64
+	token      string
+	intentos   int
+	cuenta     *int64
+	periodos   []time.Time
+	solicitada time.Time
+}
+
+func (s *Servicio) plazoReclamo() time.Duration { return s.visibilidadCola / 2 }
+
+func (s *Servicio) umbralBarrido() time.Duration { return max(barridoCola, 3*s.visibilidadCola) }
 
 func (s *Servicio) despertarExportaciones() {
 	select {
@@ -112,7 +137,43 @@ func (s *Servicio) despertarExportaciones() {
 	}
 }
 
-func (s *Servicio) AtenderExportaciones(ctx context.Context) {
+func (s *Servicio) encolarExportacion(ctx context.Context, id int64) {
+	if !s.cola.Habilitada() {
+		s.despertarExportaciones()
+		return
+	}
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), tiempoLimiteCola)
+	defer cancelar()
+	if err := s.cola.Enviar(ctx, strconv.FormatInt(id, 10)); err != nil {
+		slog.Warn("encolar exportacion: la retoma el barrido", "exportacion", id, "error", err)
+	}
+}
+
+func (s *Servicio) AtenderExportaciones(ctx context.Context, consumidores int) {
+	consumidores = max(consumidores, 1)
+	var grupo sync.WaitGroup
+	if s.cola.Habilitada() {
+		grupo.Add(1)
+		go func() {
+			defer grupo.Done()
+			s.barrerCola(ctx)
+		}()
+	}
+	for range consumidores {
+		grupo.Add(1)
+		go func() {
+			defer grupo.Done()
+			if s.cola.Habilitada() {
+				s.consumirCola(ctx)
+			} else {
+				s.consumirTabla(ctx)
+			}
+		}()
+	}
+	grupo.Wait()
+}
+
+func (s *Servicio) consumirTabla(ctx context.Context) {
 	tic := time.NewTicker(esperaExportacion)
 	defer tic.Stop()
 	for {
@@ -121,7 +182,7 @@ func (s *Servicio) AtenderExportaciones(ctx context.Context) {
 			if err != nil {
 				slog.Error("resolver exportacion", "error", err)
 			}
-			if !hubo || ctx.Err() != nil {
+			if !hubo || err != nil || ctx.Err() != nil {
 				break
 			}
 		}
@@ -134,67 +195,411 @@ func (s *Servicio) AtenderExportaciones(ctx context.Context) {
 	}
 }
 
-func (s *Servicio) ResolverExportacionPendiente(ctx context.Context) (bool, error) {
-	var id int64
-	var cuenta *int64
-	var desde, hasta time.Time
+func (s *Servicio) barrerCola(ctx context.Context) {
+	tic := time.NewTicker(barridoCola)
+	defer tic.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tic.C:
+			if n, err := s.ReencolarExportaciones(ctx); err != nil {
+				slog.Error("reencolar exportaciones", "error", err)
+			} else if n > 0 {
+				slog.Info("exportaciones reencoladas", "cantidad", n)
+			}
+		}
+	}
+}
+
+func (s *Servicio) consumirCola(ctx context.Context) {
+	for ctx.Err() == nil {
+		hubo, err := s.AtenderMensajeDeExportacion(ctx)
+		if err != nil && ctx.Err() == nil {
+			slog.Error("atender la cola de exportaciones", "recibio", hubo, "error", err)
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}
+}
+
+func (s *Servicio) AtenderMensajeDeExportacion(ctx context.Context) (bool, error) {
+	m, err := s.cola.Recibir(ctx, esperaCola, s.visibilidadCola)
+	if err != nil || m == nil {
+		return false, err
+	}
+	id, err := strconv.ParseInt(m.Cuerpo, 10, 64)
+	if err != nil {
+		return true, errors.Join(fmt.Errorf("mensaje de exportacion invalido %q", m.Cuerpo), s.cola.Borrar(ctx, m))
+	}
+
+	r, err := s.reclamar(ctx, id)
+	if err != nil {
+		err = fmt.Errorf("reclamar la exportacion %d (recepcion %d): %w", id, m.Recibido, err)
+		if ctx.Err() != nil {
+			return true, errors.Join(err, s.devolverMensaje(ctx, m))
+		}
+		return true, err
+	}
+	if r == nil {
+		espera, err := s.esperaPendiente(ctx, id)
+		if err != nil {
+			return true, err
+		}
+		if espera > 0 {
+			return true, s.cola.Ocultar(ctx, m, espera)
+		}
+		return true, s.cola.Borrar(ctx, m)
+	}
+
+	res, err := s.intentarExportacion(ctx, r, m)
+	switch s.desenlace(ctx, r, err) {
+	case exportacionLista:
+		errBorrar := s.borrarMensaje(ctx, m)
+		s.avisarExportacionLista(ctx, res)
+		return true, errBorrar
+	case exportacionAjena:
+		return true, s.borrarMensaje(ctx, m)
+	case exportacionCancelada:
+		return true, errors.Join(s.soltarExportacion(ctx, r, nil, true, 0), s.reencolarMensaje(ctx, m, 0))
+	case exportacionEnEspera:
+		return true, errors.Join(s.soltarExportacion(ctx, r, err, true, esperaArchivado), s.reencolarMensaje(ctx, m, esperaArchivado))
+	case exportacionAgotada:
+		return true, errors.Join(s.errorDeIntento(r, err), s.agotarExportacion(ctx, r, err), s.borrarMensaje(ctx, m))
+	default:
+		espera := s.esperaReintento(r.intentos)
+		return true, errors.Join(s.errorDeIntento(r, err), s.soltarExportacion(ctx, r, err, false, espera), s.ocultarMensaje(ctx, m, espera))
+	}
+}
+
+type desenlaceExportacion int
+
+const (
+	exportacionLista desenlaceExportacion = iota
+	exportacionAjena
+	exportacionCancelada
+	exportacionEnEspera
+	exportacionAgotada
+	exportacionReintento
+)
+
+var errIntentosAgotados = errors.New("agoto los reintentos")
+
+func (s *Servicio) intentarExportacion(ctx context.Context, r *reclamo, m *cola.Mensaje) (*Exportacion, error) {
+	if r.intentos > s.intentosExportacion {
+		return nil, errIntentosAgotados
+	}
+	return s.armarExportacion(ctx, r, m)
+}
+
+func (s *Servicio) desenlace(ctx context.Context, r *reclamo, err error) desenlaceExportacion {
+	switch {
+	case err == nil:
+		return exportacionLista
+	case errors.Is(err, errExportacionAjena):
+		return exportacionAjena
+	case errors.Is(err, errIntentosAgotados):
+		return exportacionAgotada
+	case ctx.Err() != nil:
+		return exportacionCancelada
+	case s.esperarArchivado(r, err):
+		return exportacionEnEspera
+	case r.intentos >= s.intentosExportacion:
+		return exportacionAgotada
+	default:
+		return exportacionReintento
+	}
+}
+
+func (s *Servicio) errorDeIntento(r *reclamo, err error) error {
+	if errors.Is(err, errIntentosAgotados) {
+		return nil
+	}
+	return fmt.Errorf("exportacion %d, intento %d: %w", r.id, r.intentos, err)
+}
+
+func (s *Servicio) esperaPendiente(ctx context.Context, id int64) (time.Duration, error) {
+	var segundos float64
 	err := s.pool.QueryRow(ctx, `
-		UPDATE solicitudes_exportacion SET tomada_en = now()
+		SELECT extract(epoch FROM reintentar_desde - now()) FROM solicitudes_exportacion
+		WHERE id = $1 AND estado = $2 AND reintentar_desde > now()`, id, ExportPendiente).Scan(&segundos)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return time.Duration(segundos*float64(time.Second)) + time.Second, err
+}
+
+func (s *Servicio) reencolarMensaje(ctx context.Context, m *cola.Mensaje, espera time.Duration) error {
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), tiempoLimiteCola)
+	defer cancelar()
+	if err := s.cola.EnviarMasTarde(ctx, m.Cuerpo, espera); err != nil {
+		return errors.Join(err, s.cola.Ocultar(ctx, m, espera))
+	}
+	return s.cola.Borrar(ctx, m)
+}
+
+func (s *Servicio) devolverMensaje(ctx context.Context, m *cola.Mensaje) error {
+	return s.ocultarMensaje(ctx, m, 0)
+}
+
+func (s *Servicio) ocultarMensaje(ctx context.Context, m *cola.Mensaje, durante time.Duration) error {
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), tiempoLimiteCola)
+	defer cancelar()
+	return s.cola.Ocultar(ctx, m, durante)
+}
+
+func (s *Servicio) borrarMensaje(ctx context.Context, m *cola.Mensaje) error {
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), tiempoLimiteCola)
+	defer cancelar()
+	return s.cola.Borrar(ctx, m)
+}
+
+func (s *Servicio) esperaReintento(intentos int) time.Duration {
+	return min(time.Duration(1<<min(intentos-1, maxIntentosSoltado))*time.Minute, s.umbralBarrido()-time.Minute)
+}
+
+func (s *Servicio) esperarArchivado(r *reclamo, err error) bool {
+	var e *apierr.Error
+	return errors.As(err, &e) && e.Estado == http.StatusServiceUnavailable && time.Since(r.solicitada) < toleranciaArchivo
+}
+
+func (s *Servicio) ReencolarExportaciones(ctx context.Context) (int, error) {
+	filas, err := s.pool.Query(ctx, `
+		UPDATE solicitudes_exportacion SET encolada_en = now()
+		WHERE id IN (
+			SELECT id FROM solicitudes_exportacion
+			WHERE estado = $1
+			  AND greatest(solicitada_en, coalesce(encolada_en, solicitada_en), coalesce(tomada_en, solicitada_en))
+			      < now() - make_interval(secs => $2)
+			  AND (reintentar_desde IS NULL OR reintentar_desde <= now())
+			ORDER BY id
+			LIMIT 100
+			FOR UPDATE SKIP LOCKED)
+		RETURNING id`, ExportPendiente, s.umbralBarrido().Seconds())
+	if err != nil {
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(filas, pgx.RowTo[int64])
+	if err != nil {
+		return 0, err
+	}
+	var errs []error
+	var fallidos []int64
+	for _, id := range ids {
+		if err := s.cola.Enviar(ctx, strconv.FormatInt(id, 10)); err != nil {
+			errs = append(errs, err)
+			fallidos = append(fallidos, id)
+		}
+	}
+	if len(fallidos) > 0 {
+		_, err := s.pool.Exec(context.WithoutCancel(ctx),
+			`UPDATE solicitudes_exportacion SET encolada_en = NULL WHERE id = ANY($1)`, fallidos)
+		errs = append(errs, err)
+	}
+	return len(ids) - len(fallidos), errors.Join(errs...)
+}
+
+const columnasReclamo = `id, tomada_por, intentos, cuenta_id, desde, hasta, solicitada_en`
+
+func (s *Servicio) ResolverExportacionPendiente(ctx context.Context) (bool, error) {
+	r, err := s.escanearReclamo(s.pool.QueryRow(ctx, `
+		UPDATE solicitudes_exportacion SET tomada_por = $3, tomada_en = now(), intentos = intentos + 1
 		WHERE id = (
 			SELECT id FROM solicitudes_exportacion
-			WHERE estado = $1 AND (tomada_en IS NULL OR tomada_en < now() - make_interval(secs => $2))
+			WHERE estado = $1
+			  AND (tomada_en IS NULL OR tomada_en < now() - make_interval(secs => $2))
+			  AND (reintentar_desde IS NULL OR reintentar_desde <= now())
 			ORDER BY id
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED)
-		RETURNING id, cuenta_id, desde, hasta`,
-		ExportPendiente, leaseExportacion.Seconds()).Scan(&id, &cuenta, &desde, &hasta)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
+		RETURNING `+columnasReclamo,
+		ExportPendiente, s.plazoReclamo().Seconds(), nuevoToken()))
+	if r == nil || err != nil {
 		return false, err
 	}
 
-	periodos := []time.Time{}
-	for p := desde; !p.After(hasta); p = p.AddDate(0, 1, 0) {
-		periodos = append(periodos, p)
+	res, err := s.intentarExportacion(ctx, r, nil)
+	switch s.desenlace(ctx, r, err) {
+	case exportacionLista:
+		s.avisarExportacionLista(ctx, res)
+		return true, nil
+	case exportacionAjena:
+		return true, nil
+	case exportacionCancelada:
+		return true, s.soltarExportacion(ctx, r, nil, true, 0)
+	case exportacionEnEspera:
+		return true, s.soltarExportacion(ctx, r, err, true, esperaArchivado)
+	case exportacionAgotada:
+		return true, errors.Join(s.errorDeIntento(r, err), s.agotarExportacion(ctx, r, err))
+	default:
+		return true, errors.Join(s.errorDeIntento(r, err), s.soltarExportacion(ctx, r, err, false, s.esperaReintento(r.intentos)))
 	}
+}
 
-	res, err := s.resolverExportacion(ctx, id, cuenta, periodos)
-	if err != nil && ctx.Err() != nil {
-		return true, err
+func (s *Servicio) reclamar(ctx context.Context, id int64) (*reclamo, error) {
+	return s.escanearReclamo(s.pool.QueryRow(ctx, `
+		UPDATE solicitudes_exportacion SET tomada_por = $3, tomada_en = now(), intentos = intentos + 1
+		WHERE id = $1 AND estado = $2
+		  AND (tomada_en IS NULL OR tomada_en < now() - make_interval(secs => $4))
+		  AND (reintentar_desde IS NULL OR reintentar_desde <= now())
+		RETURNING `+columnasReclamo,
+		id, ExportPendiente, nuevoToken(), s.plazoReclamo().Seconds()))
+}
+
+func (s *Servicio) escanearReclamo(fila pgx.Row) (*reclamo, error) {
+	var r reclamo
+	var desde, hasta time.Time
+	err := fila.Scan(&r.id, &r.token, &r.intentos, &r.cuenta, &desde, &hasta, &r.solicitada)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
 	if err != nil {
-		_, errAnotar := s.pool.Exec(context.WithoutCancel(ctx), `
-			UPDATE solicitudes_exportacion
-			SET estado = $2, motivo = $3, resuelta_en = now() WHERE id = $1`,
-			id, ExportFallida, err.Error())
-		return true, errors.Join(fmt.Errorf("exportacion %d: %w", id, err), errAnotar)
+		return nil, err
 	}
-	s.avisarExportacionLista(ctx, res)
-	return true, nil
+	for p := desde; !p.After(hasta); p = p.AddDate(0, 1, 0) {
+		r.periodos = append(r.periodos, p)
+	}
+	return &r, nil
+}
+
+func nuevoToken() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (s *Servicio) armarExportacion(ctx context.Context, r *reclamo, m *cola.Mensaje) (*Exportacion, error) {
+	trabajo, cancelar := context.WithCancelCause(ctx)
+	latido := make(chan struct{})
+	defer func() {
+		cancelar(nil)
+		<-latido
+	}()
+	go func() {
+		defer close(latido)
+		tic := time.NewTicker(s.visibilidadCola / 4)
+		defer tic.Stop()
+		for {
+			select {
+			case <-trabajo.Done():
+				return
+			case <-tic.C:
+				tag, err := s.pool.Exec(trabajo, `
+					UPDATE solicitudes_exportacion SET tomada_en = now() WHERE id = $1 AND tomada_por = $2`,
+					r.id, r.token)
+				if trabajo.Err() != nil {
+					return
+				}
+				if err == nil && tag.RowsAffected() == 0 {
+					cancelar(errExportacionAjena)
+					return
+				}
+				if err != nil {
+					slog.Warn("renovar la exportacion tomada", "exportacion", r.id, "error", err)
+				}
+				if m != nil {
+					if err := s.cola.Ocultar(trabajo, m, s.visibilidadCola); err != nil && trabajo.Err() == nil {
+						slog.Warn("extender la visibilidad de la exportacion", "exportacion", r.id, "error", err)
+					}
+				}
+			}
+		}
+	}()
+	res, err := s.resolverExportacion(trabajo, r)
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(trabajo), errExportacionAjena) {
+		return nil, errExportacionAjena
+	}
+	return res, err
+}
+
+func (s *Servicio) soltarExportacion(ctx context.Context, r *reclamo, causa error, devolverIntento bool, espera time.Duration) error {
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancelar()
+	var motivo *string
+	if causa != nil {
+		m := causa.Error()
+		motivo = &m
+	}
+	devolver := 0
+	if devolverIntento {
+		devolver = 1
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE solicitudes_exportacion
+		SET tomada_por = NULL, tomada_en = NULL, encolada_en = now(),
+		    reintentar_desde = now() + make_interval(secs => $6),
+		    intentos = intentos - $3, motivo = coalesce($4, motivo)
+		WHERE id = $1 AND tomada_por = $2 AND estado = $5`,
+		r.id, r.token, devolver, motivo, ExportPendiente, espera.Seconds())
+	return err
+}
+
+func (s *Servicio) agotarExportacion(ctx context.Context, r *reclamo, causa error) error {
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancelar()
+	var motivo *string
+	if causa != nil && !errors.Is(causa, errIntentosAgotados) {
+		m := causa.Error()
+		motivo = &m
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE solicitudes_exportacion
+		SET estado = $3, motivo = coalesce($4, motivo, 'agoto los reintentos'), resuelta_en = now(), tomada_por = NULL
+		WHERE id = $1 AND tomada_por = $2 AND estado = $5`,
+		r.id, r.token, ExportFallida, motivo, ExportPendiente)
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	var errDLQ error
+	if s.dlq.Habilitada() {
+		if err := s.dlq.Enviar(ctx, strconv.FormatInt(r.id, 10)); err != nil {
+			errDLQ = fmt.Errorf("mandar la exportacion %d a la DLQ: %w", r.id, err)
+		}
+	}
+	s.avisarExportacionFallida(ctx, r)
+	return errDLQ
+}
+
+func (s *Servicio) pantallaExportaciones() string {
+	return strings.TrimSuffix(s.appURL, "/") + "/#/exportaciones"
 }
 
 func (s *Servicio) avisarExportacionLista(ctx context.Context, e *Exportacion) {
-	if !s.avisos.Habilitado() || e.CuentaID == nil {
+	mensaje := fmt.Sprintf("Tu exportación N.º %d (%s a %s, %d movimientos) está lista.\n\n"+
+		"Para descargarla, entrá a la app: %s\n\nEl archivo queda disponible unos días.",
+		e.ID, e.Desde, e.Hasta, valor(e.Filas), s.pantallaExportaciones())
+	s.avisarTitular(ctx, e.ID, e.CuentaID, "lista", "Tu exportación está lista", mensaje)
+}
+
+func (s *Servicio) avisarExportacionFallida(ctx context.Context, r *reclamo) {
+	desde, hasta := r.periodos[0].Format("2006-01"), r.periodos[len(r.periodos)-1].Format("2006-01")
+	mensaje := fmt.Sprintf("No pudimos armar tu exportación N.º %d (%s a %s): la intentamos varias veces y "+
+		"siguió fallando.\n\nPodés pedirla de nuevo desde la app: %s",
+		r.id, desde, hasta, s.pantallaExportaciones())
+	s.avisarTitular(ctx, r.id, r.cuenta, "fallida", "No pudimos armar tu exportación", mensaje)
+}
+
+func (s *Servicio) avisarTitular(ctx context.Context, id int64, cuenta *int64, estado, asunto, mensaje string) {
+	if !s.avisos.Habilitado() || cuenta == nil {
 		return
 	}
+	ctx, cancelar := context.WithTimeout(context.WithoutCancel(ctx), tiempoLimiteAviso)
+	defer cancelar()
 	var titular *string
-	if err := s.pool.QueryRow(ctx, `SELECT titular FROM cuentas WHERE id = $1`, *e.CuentaID).Scan(&titular); err != nil {
-		slog.Error("buscar el titular para avisar la exportacion", "exportacion", e.ID, "error", err)
+	if err := s.pool.QueryRow(ctx, `SELECT titular FROM cuentas WHERE id = $1`, *cuenta).Scan(&titular); err != nil {
+		slog.Error("buscar el titular para avisar la exportacion", "exportacion", id, "error", err)
 		return
 	}
 	if titular == nil {
 		return
 	}
-	mensaje := fmt.Sprintf("Tu exportación N.º %d (%s a %s, %d movimientos) está lista.\n\n"+
-		"Para descargarla, entrá a la app: %s\n\nEl archivo queda disponible unos días.",
-		e.ID, e.Desde, e.Hasta, valor(e.Filas), strings.TrimSuffix(s.appURL, "/")+"/#/exportaciones")
-	if err := s.avisos.Avisar(ctx, *titular, "Tu exportación está lista", mensaje); err != nil {
-		slog.Error("avisar la exportacion", "exportacion", e.ID, "error", err)
+	if err := s.avisos.Avisar(ctx, *titular, asunto, mensaje); err != nil {
+		slog.Error("avisar la exportacion", "exportacion", id, "estado", estado, "error", err)
 		return
 	}
-	slog.Info("exportacion avisada", "exportacion", e.ID)
+	slog.Info("exportacion avisada", "exportacion", id, "estado", estado)
 }
 
 func valor(p *int64) int64 {
@@ -250,12 +655,16 @@ func enPesos(centavos int64) string {
 	return fmt.Sprintf("%s%d,%02d", signo, centavos/100, centavos%100)
 }
 
-func (s *Servicio) resolverExportacion(ctx context.Context, id int64, cuenta *int64, periodos []time.Time) (*Exportacion, error) {
+func (s *Servicio) resolverExportacion(ctx context.Context, r *reclamo) (*Exportacion, error) {
+	id, cuenta, periodos := r.id, r.cuenta, r.periodos
 	var filas int64
 	var deBase, deArchivo int
 
 	aliases := map[int64]string{}
-	alias := func(cuentaID int64) (string, error) {
+	alias := func(cuentaID int64, resuelto string) (string, error) {
+		if resuelto != "" {
+			return resuelto, nil
+		}
 		if a, ok := aliases[cuentaID]; ok {
 			return a, nil
 		}
@@ -271,7 +680,7 @@ func (s *Servicio) resolverExportacion(ctx context.Context, id int64, cuenta *in
 		return a, nil
 	}
 
-	clave := fmt.Sprintf("%ssolicitud=%d/movimientos.csv", prefijoExportaciones, id)
+	clave := fmt.Sprintf("%ssolicitud=%d/%s/movimientos.csv", prefijoExportaciones, id, r.token)
 	subido, err := s.obj.Subir(ctx, clave, "text/csv; charset=utf-8", func(w io.Writer) error {
 		if _, err := io.WriteString(w, "\ufeff"); err != nil {
 			return err
@@ -282,12 +691,12 @@ func (s *Servicio) resolverExportacion(ctx context.Context, id int64, cuenta *in
 			return err
 		}
 		for _, p := range periodos {
-			origen, _, err := s.recorrerPeriodo(ctx, cuenta, p, func(m Movimiento) error {
-				propia, err := alias(m.CuentaID)
+			origen, _, err := s.recorrerPeriodo(ctx, cuenta, p, func(m movimientoConAlias) error {
+				propia, err := alias(m.CuentaID, m.alias)
 				if err != nil {
 					return err
 				}
-				otra, err := alias(m.ContraparteID)
+				otra, err := alias(m.ContraparteID, m.aliasContraparte)
 				if err != nil {
 					return err
 				}
@@ -317,14 +726,18 @@ func (s *Servicio) resolverExportacion(ctx context.Context, id int64, cuenta *in
 		return nil, err
 	}
 
-	if _, err := s.pool.Exec(ctx, `
+	res, err := escanearExportacion(s.pool.QueryRow(ctx, `
 		UPDATE solicitudes_exportacion
 		SET estado = $2, clave = $3, uri = $4, filas = $5,
-		    periodos_base = $6, periodos_archivo = $7, resuelta_en = now()
-		WHERE id = $1`, id, ExportLista, clave, subido.URI, filas, deBase, deArchivo); err != nil {
-		return nil, err
+		    periodos_base = $6, periodos_archivo = $7, motivo = NULL, resuelta_en = now(),
+		    tomada_por = NULL, reintentar_desde = NULL
+		WHERE id = $1 AND tomada_por = $8 AND estado = $9
+		RETURNING `+columnasExportacion,
+		id, ExportLista, clave, subido.URI, filas, deBase, deArchivo, r.token, ExportPendiente))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errExportacionAjena
 	}
-	return s.VerExportacion(ctx, id)
+	return res, err
 }
 
 const columnasExportacion = `id, cuenta_id, desde, hasta, estado, clave, uri, filas,

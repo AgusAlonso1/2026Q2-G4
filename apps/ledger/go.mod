@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.10
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.58.3
 	github.com/aws/aws-sdk-go-v2/service/sns v1.31.3
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.34.3
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/parquet-go/parquet-go v0.25.1
 	golang.org/x/sync v0.13.0

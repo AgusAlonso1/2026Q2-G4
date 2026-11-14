@@ -12,6 +12,7 @@ import (
 
 	"ledger/db"
 	"ledger/internal/avisos"
+	"ledger/internal/cola"
 	"ledger/internal/config"
 	"ledger/internal/cors"
 	"ledger/internal/ledger"
@@ -112,7 +113,26 @@ func correr() error {
 		return err
 	}
 	svc.ConAvisos(titulares, cfg.AppURL)
-	go svc.AtenderExportaciones(ctx)
+
+	exportaciones, err := cola.Nueva(arranque, cfg.Region, cfg.ExportacionesCola)
+	if err != nil {
+		return err
+	}
+	svc.ConCola(exportaciones, nil, cfg.ExportacionesIntentos, cfg.ExportacionesVisibilidad)
+	exportando := make(chan struct{})
+	if exportaciones.Habilitada() {
+		slog.Info("exportaciones por SQS: la API las encola y las barre, y las arma el exportador", "cola", exportaciones.URL())
+		go func() {
+			defer close(exportando)
+			svc.BarrerExportaciones(ctx)
+		}()
+	} else {
+		slog.Warn("sin EXPORTACIONES_QUEUE_URL: la API arma las exportaciones desde la tabla")
+		go func() {
+			defer close(exportando)
+			svc.AtenderExportaciones(ctx, 1)
+		}()
+	}
 
 	simulado := mock.Nuevo(pool, mock.Opciones{
 		Clave: cfg.MockClave, DemoraSinRespuesta: cfg.MockDemoraSinRespuesta})
@@ -168,6 +188,7 @@ func correr() error {
 	go func() {
 		defer close(drenado)
 		<-ctx.Done()
+		limite := time.After(25 * time.Second)
 
 		apagado, cancelar := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancelar()
@@ -176,6 +197,10 @@ func correr() error {
 		}
 
 		notif.Esperar(apagado)
+		select {
+		case <-exportando:
+		case <-limite:
+		}
 	}()
 
 	slog.Info("api escuchando", "puerto", cfg.Puerto)

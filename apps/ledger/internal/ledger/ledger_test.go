@@ -73,3 +73,23 @@ func TestNuloSiVacio(t *testing.T) {
 		t.Error("una cadena con contenido tiene que pasar tal cual")
 	}
 }
+
+func TestIntentoFallidoSeDistingueDeUnErrorDeInfraestructura(t *testing.T) {
+	intento := intentoFallido{errors.New("PUT cortado")}
+	infra := errors.New("la base no responde")
+	casos := []struct {
+		err  error
+		dice bool
+	}{
+		{nil, false},
+		{intento, true},
+		{errors.Join(intento, nil), true},
+		{errors.Join(intento, infra), false},
+		{infra, false},
+	}
+	for _, c := range casos {
+		if got := esIntentoFallido(c.err); got != c.dice {
+			t.Errorf("esIntentoFallido(%v) = %v, se queria %v", c.err, got, c.dice)
+		}
+	}
+}

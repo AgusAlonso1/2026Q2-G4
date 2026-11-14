@@ -489,16 +489,21 @@ paths:
       tags: [historico]
       summary: Exportar el histórico de un rango de meses
       description: |
-        Registra la solicitud y responde enseguida con la exportación `pendiente`. La arma un
-        proceso en segundo plano, que cruza períodos que están en línea con períodos ya
-        archivados y deja el archivo en S3. El rango se acota a 24 meses.
+        Registra la solicitud, la manda a la cola de exportaciones y responde enseguida con la
+        exportación `pendiente`. La arma en segundo plano el exportador, un servicio aparte que
+        escala con la cola: cruza períodos que están en línea con períodos ya archivados y deja
+        el archivo en S3. Si el exportador estaba en cero, la primera puede tardar varios
+        minutos. Si falla, se reintenta con espera creciente, y al agotar los intentos (3, salvo
+        que se configure otro valor) queda `fallida`. Sin cola configurada (local), la arma la
+        propia API. El rango se acota a 24 meses.
 
         El archivo es un CSV en UTF-8 con BOM, separado por `;`, con las columnas `Fecha` (hora
         de Argentina), `Cuenta`, `Operación`, `Contraparte` (alias), `Monto` (pesos, con coma
         decimal) y `Orden`.
 
-        Cuando queda `lista`, si la exportación es de una cuenta con titular suscripto, el
-        titular recibe un mail que avisa que está lista, con el link a la app (no al archivo).
+        Cuando queda `lista` o `fallida`, si la exportación es de una cuenta con titular
+        suscripto, el titular recibe un mail que se lo avisa, con el link a la app (no al
+        archivo).
         Se descarga con `GET /exportaciones/{id}/descarga`.
       operationId: exportar
       requestBody:

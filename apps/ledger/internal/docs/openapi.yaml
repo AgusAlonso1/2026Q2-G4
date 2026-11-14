@@ -770,6 +770,9 @@ paths:
         Escribe por el mismo camino que la liquidación normal —orden, par de asientos y
         saldos en la misma transacción—, sólo que con el período forzado. No es un atajo
         que saltea el ledger: si lo fuera, el archivado no probaría nada.
+
+        Con `meses` siembra `periodo` y los `meses - 1` anteriores, `cantidad`
+        transferencias en cada uno. El saldo del origen tiene que alcanzar para todas.
       operationId: semilla
       requestBody:
         required: true
@@ -779,7 +782,8 @@ paths:
               type: object
               required: [periodo, origen_id, destino_id, cantidad, monto_centavos]
               properties:
-                periodo: { type: string, pattern: '^\d{4}-\d{2}$' }
+                periodo: { type: string, pattern: '^\d{4}-\d{2}$', description: El último mes a sembrar. }
+                meses: { type: integer, minimum: 1, maximum: 24, default: 1 }
                 origen_id: { type: integer, format: int64 }
                 destino_id: { type: integer, format: int64 }
                 cantidad: { type: integer, minimum: 1, maximum: 1000 }
@@ -788,6 +792,13 @@ paths:
         '401': { $ref: '#/components/responses/AdminNoAutorizado' }
         '201':
           description: Generados.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transferencias: { type: integer }
+                  periodos: { type: array, items: { type: string }, example: ['2026-08', '2026-09', '2026-10'] }
         '400': { $ref: '#/components/responses/Invalido' }
 
   /servicio-mock/egresos:

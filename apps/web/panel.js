@@ -271,7 +271,9 @@ async function pintarContable({ cuerpo }) {
     avisar(a.agendado ? `Archivado agendado para ${a.periodo}` : a.motivo);
   });
 
-  const semilla = accion('Sembrar mes anterior', async () => {
+  const meses = el('input', { type: 'number', min: 1, max: 24, value: 1 });
+
+  const semilla = accion('Sembrar meses anteriores', async () => {
     // La semilla escribe por el mismo camino que una transferencia, así que el origen tiene
     // que tener el dinero, y la única cuenta cuyo saldo puede leer esta sesión es la propia.
     const mia = await exigir('GET', `/cuentas/${estado.cuenta.id}`);
@@ -280,7 +282,8 @@ async function pintarContable({ cuerpo }) {
     if (!destino) { avisar('Hace falta otra cuenta de usuario para sembrarle', true); return; }
 
     const cantidad = 5;
-    const monto = Math.min(10000, Math.floor(mia.saldo_centavos / cantidad));
+    const n = Number(meses.value) || 1;
+    const monto = Math.min(10000, Math.floor(mia.saldo_centavos / (cantidad * n)));
     if (monto <= 0) {
       avisar('Tu cuenta no tiene saldo: cargá plata en Ingresar antes de sembrar', true);
       return;
@@ -290,19 +293,23 @@ async function pintarContable({ cuerpo }) {
       admin: true,
       cuerpo: {
         periodo: periodoActual(-1),
+        meses: n,
         origen_id: mia.id,
         destino_id: destino.id,
         cantidad,
         monto_centavos: monto,
       },
     });
+    const p = s.periodos;
     avisar(`${s.transferencias} transferencias de ${enPesos(monto)} `
-      + `a ${destino.alias}, fechadas en ${s.periodo}`);
+      + `a ${destino.alias}, fechadas de ${p[0]} a ${p[p.length - 1]}`);
   });
 
   cuerpo.replaceChildren(
     el('p', { clase: 'ayuda', texto: `Período en curso: ${periodoActual()}` }),
     el('div', { style: 'height:.75rem' }),
+    el('div', { clase: 'rejilla' },
+      el('label', { clase: 'campo' }, el('span', { texto: 'Meses a sembrar' }), meses)),
     el('div', { clase: 'fila-botones' }, verificar, archivar, semilla),
     salida);
 }

@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -442,4 +443,51 @@ func mismoMovimiento(a, b ledger.Movimiento) bool {
 	periodo, creado := a.Periodo, a.CreadoEn
 	a.Periodo, a.CreadoEn = b.Periodo, b.CreadoEn
 	return a == b && periodo.Equal(b.Periodo) && creado.Equal(b.CreadoEn)
+}
+
+func TestSemillaDeVariosMeses(t *testing.T) {
+	svc, _, _ := entorno(t)
+	ctx := context.Background()
+
+	origen, err := svc.CrearCuenta(ctx, ledger.EntradaCuenta{Alias: "ana", Tipo: "usuario", SaldoInicialCentavos: 600})
+	if err != nil {
+		t.Fatalf("crear origen: %v", err)
+	}
+	destino, err := svc.CrearCuenta(ctx, ledger.EntradaCuenta{Alias: "kiosco", Tipo: "comercio"})
+	if err != nil {
+		t.Fatalf("crear destino: %v", err)
+	}
+	entrada := ledger.EntradaSemilla{
+		Periodo: periodoViejo.Format("2006-01"), Meses: 3, OrigenID: origen.ID, DestinoID: destino.ID,
+		Cantidad: 3, MontoCentavos: 100,
+	}
+
+	if _, err := svc.SembrarPeriodo(ctx, entrada); err == nil {
+		t.Fatal("con 600 centavos no alcanza para 9 transferencias de 100")
+	}
+
+	entrada.Cantidad = 2
+	res, err := svc.SembrarPeriodo(ctx, entrada)
+	if err != nil {
+		t.Fatalf("sembrar: %v", err)
+	}
+	if res.Transferencias != 6 {
+		t.Fatalf("se sembraron %d transferencias, se querian 6", res.Transferencias)
+	}
+	var esperados []string
+	for m := 2; m >= 0; m-- {
+		esperados = append(esperados, periodoViejo.AddDate(0, -m, 0).Format("2006-01"))
+	}
+	if fmt.Sprint(res.Periodos) != fmt.Sprint(esperados) {
+		t.Fatalf("periodos %v, se esperaban %v", res.Periodos, esperados)
+	}
+	for m := 0; m < 3; m++ {
+		ext, err := svc.MovimientosDePeriodo(ctx, origen.ID, periodoViejo.AddDate(0, -m, 0))
+		if err != nil {
+			t.Fatalf("extracto: %v", err)
+		}
+		if len(ext.Movimientos) != 2 {
+			t.Fatalf("el periodo %s tiene %d movimientos, se querian 2", ext.Periodo, len(ext.Movimientos))
+		}
+	}
 }

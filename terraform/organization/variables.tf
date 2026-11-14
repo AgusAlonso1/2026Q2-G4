@@ -170,6 +170,24 @@ variable "archive_schedule" {
   }
 }
 
+variable "api_schedule" {
+  description = "Piso programado de tareas de la API para los picos que se conocen de antemano: los días de cobro de haberes (1 al 5 de cada mes) sube a 4 tareas antes de que llegue el tráfico y a la noche vuelve a 2. El autoscaling por CPU sigue funcionando entre tasks y max. Cron de Application Auto Scaling, hora de Buenos Aires."
+  type = map(object({
+    schedule = string
+    tasks    = number
+    max      = optional(number)
+  }))
+  default = {
+    cobro-abrir  = { schedule = "cron(0 8 1-5 * ? *)", tasks = 4, max = 5 }
+    cobro-cerrar = { schedule = "cron(0 20 1-5 * ? *)", tasks = 2, max = 5 }
+  }
+
+  validation {
+    condition     = alltrue([for a in values(var.api_schedule) : a.tasks >= 2 && coalesce(a.max, a.tasks) <= 5 && a.tasks <= coalesce(a.max, a.tasks)])
+    error_message = "La API va de 2 a 5 tareas (su ASG llega a 6 instancias, el tope de AWS Academy): tasks entre 2 y max, y max hasta 5."
+  }
+}
+
 variable "notification_emails" {
   description = "Emails separados por comas que se suscriben a las alertas de operación (SNS). Cada uno tiene que confirmar la suscripción."
   type        = string

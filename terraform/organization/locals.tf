@@ -44,7 +44,7 @@ locals {
       min_count         = 2
       max_count         = 5 # el ASG admite max_count + 1, y AWS Academy no deja más de 6
       cpu_target        = 60
-      schedule          = {}
+      schedule          = var.api_schedule
       environment = {
         APP_PORT            = tostring(var.app_port)
         S3_BUCKET           = module.storage.bucket_name

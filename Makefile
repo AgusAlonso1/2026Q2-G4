@@ -13,7 +13,7 @@ export PROJECT
 export TF_VAR_image_tag = $(IMAGE_TAG)
 export TF_VAR_project_name = $(PROJECT)
 
-.PHONY: help fmt fmt-check init validate tag imagen plan apply destroy clean
+.PHONY: help fmt fmt-check init validate tag imagen plan apply destroy clean carga
 
 help:
 	@echo "make fmt        Formatea todo terraform/"
@@ -26,6 +26,7 @@ help:
 	@echo "make apply      Crea los buckets del proyecto si no existen y aplica el plan guardado"
 	@echo "make destroy    Destruye toda la infraestructura y después los buckets (proyecto y state)"
 	@echo "make clean      Borra .terraform/ y tfplan"
+	@echo "make carga      Genera carga contra la API (SEGUNDOS, CONCURRENCIA y TOKEN opcionales) para ver el escalado en el dashboard"
 
 fmt:
 	$(TF) fmt -recursive terraform
@@ -73,3 +74,6 @@ destroy: init
 
 clean:
 	rm -rf $(TF_DIR)/.terraform $(TF_DIR)/tfplan
+
+carga:
+	scripts/carga.sh $(or $(SEGUNDOS),300) $(or $(CONCURRENCIA),200)

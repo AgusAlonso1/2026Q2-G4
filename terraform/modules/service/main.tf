@@ -120,8 +120,9 @@ resource "aws_appautoscaling_scheduled_action" "this" {
   schedule           = each.value.schedule
   timezone           = var.schedule_time_zone
 
+  # Sin max, la acción fija la cantidad (el archivador); con max, sube el piso y deja escalar hasta max (la API).
   scalable_target_action {
     min_capacity = each.value.tasks
-    max_capacity = each.value.tasks
+    max_capacity = coalesce(each.value.max, each.value.tasks)
   }
 }

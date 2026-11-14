@@ -89,10 +89,11 @@ variable "cpu_target" {
 }
 
 variable "schedule" {
-  description = "Acciones programadas: fijan la cantidad de tareas a una hora. Cron de Application Auto Scaling."
+  description = "Acciones programadas, con cron de Application Auto Scaling. tasks es el mínimo de tareas desde esa hora; sin max también es el máximo (fija la cantidad), con max el autoscaling sigue funcionando entre los dos."
   type = map(object({
     schedule = string
     tasks    = number
+    max      = optional(number)
   }))
   default = {}
 }

@@ -238,10 +238,46 @@ reintentos.
 
 **Archivado.** El archivador toma un período de la tabla `tareas` (`FOR UPDATE SKIP LOCKED`),
 hace `DETACH PARTITION` de ese mes, lo sube a S3 como
-`transaction-history/periodo=AAAA-MM/asientos.ndjson.gz` (un prefijo estilo Hive, que se puede
-consultar con Athena) y borra la partición. No hay un `DELETE` masivo que genere WAL ni compita
+`transaction-history/periodo=AAAA-MM/asientos.ndjson.gz` (un prefijo estilo Hive, que se
+consulta con Athena) y borra la partición. No hay un `DELETE` masivo que genere WAL ni compita
 por bloqueos con la liquidación. El extracto de un mes archivado lo arma la API leyendo ese
 objeto.
+
+### Análisis del archivo con Athena
+
+Un mes archivado sale de RDS, y lo único que lo leía era el extracto de una cuenta en un mes. Las
+preguntas que cruzan meses y cuentas (si cada mes cuadra, cuánto se movió por tramo, la historia
+completa de una cuenta) se responden con SQL sobre el archivo, en Athena
+([`modules/analytics`](terraform/modules/analytics)), sin cargar la base que liquida los pagos.
+
+- **Catálogo.** Una base de Glue con la tabla externa `asientos` sobre `transaction-history/`:
+  JSON por línea comprimido con gzip, que es lo que ya escribe el archivador, así que no cambia
+  el código. `creado_en` queda como string RFC 3339 (se convierte en la consulta con
+  `from_iso8601_timestamp`), y el `periodo` del JSON no es columna: es la partición, porque Glue
+  no acepta una columna y una partición con el mismo nombre.
+- **Partition projection.** La tabla no registra particiones: Athena las calcula desde
+  `history_start` (enero de 2024) hasta el mes actual y arma la ruta de cada una con
+  `storage.location.template`. Un mes recién archivado se ve en la próxima consulta, sin
+  `MSCK REPAIR TABLE` y sin crawler, que además necesitaría un rol propio que AWS Academy no deja
+  crear. Un filtro por `periodo` limita lo que se lee a esos meses.
+- **Workgroup `ledger`.** Fuerza su configuración sobre la del cliente: los resultados van a
+  `athena-results/` del bucket del proyecto, cifrados con SSE-KMS y la clave del proyecto. El
+  lifecycle los expira a los 7 días, pero como el bucket está versionado expirar no los borra:
+  quedan como versión anterior y los elimina la regla de versiones reemplazadas 30 días después,
+  así que duran unos 37 días. Pone un tope de 1 GiB escaneado por consulta, porque Athena
+  cobra por byte leído, y publica sus métricas en CloudWatch.
+- **Consultas guardadas.** `partida-doble` (la suma de cada mes tiene que dar 0, porque cada
+  asiento tiene su contrapartida), `volumen-mensual`, `cuentas-mas-activas` y
+  `movimientos-de-cuenta`, con `cuenta_id` como parámetro.
+- **Clase de almacenamiento.** El archivo pasa a STANDARD_IA a los 30 días y a GLACIER Instant
+  Retrieval al año. Antes iba a GLACIER (Flexible Retrieval), que Athena saltea sin error: una
+  consulta de más de un año habría dado totales incompletos. Tampoco la API podía leer ese objeto
+  para el extracto sin restaurarlo antes. Instant Retrieval se lee como cualquier objeto y sigue
+  siendo la clase más barata para datos que casi no se consultan.
+- **Red y permisos.** Athena corre fuera de la VPC y lee S3 con las credenciales de quien
+  consulta (el usuario del laboratorio o `LabRole`), que la política de la clave KMS ya habilita
+  para descifrar. No pasa por el gateway endpoint ni hace falta un endpoint nuevo. La API no
+  consulta Athena: el análisis es para operación y auditoría, no para el camino de un pago.
 
 **Conexiones.** Cada tarea abre como máximo `pool_max_conns` conexiones, que va en la
 `DB_URL`. Se calcula repartiendo `db_max_connections` (60 por defecto, por debajo de las ~80 de
@@ -295,7 +331,8 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
 ([`kms.tf`](terraform/organization/kms.tf)):
 
 - **Qué cifra:** los secretos de Secrets Manager, el bucket del archivo (SSE-KMS con *bucket
-  key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), el
+  key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), los resultados
+  de Athena, el
   almacenamiento y los backups de RDS, las imágenes de ECR, los topics de SNS, las colas de
   SQS y los logs de ECS, de las Lambdas y de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
   EBS (`aws/ebs`) y no con la del proyecto: para que Auto Scaling lance instancias con discos
@@ -475,6 +512,11 @@ nuevo y Destroy no tendría qué destruir.
   lo evitaría, a costa de tocar la transacción de cada operación.
 - **Sin autenticación IAM en RDS**: la API entra con la credencial de Secrets Manager, y
   habilitarla sólo sumaría una vía de login que nadie usa.
+- **El archivo queda en JSON y no en Parquet.** Athena cobra por byte escaneado, y Parquet,
+  columnar y con estadísticas, leería sólo las columnas de cada consulta. Con el volumen de este
+  sistema un mes comprimido pesa poco, y cambiar el formato obligaría a cambiar el archivador y
+  el extracto de la API, que leen el mismo objeto. Si el volumen creciera, un `CREATE TABLE AS
+  SELECT` a Parquet por mes se podría sumar sin tocar lo que ya existe.
 - tfsec marca estas decisiones; cada una está ignorada en el código con el motivo al lado.
 
 ## 11. Correcciones de entregas anteriores
@@ -490,7 +532,7 @@ nuevo y Destroy no tendría qué destruir.
 | Requisito | Dónde en este repo |
 |---|---|
 | ≥ 1 módulo externo | `terraform-aws-modules/vpc/aws ~> 6.7` en [`network.tf`](terraform/organization/network.tf) |
-| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `database`, `load_balancer`, `capacity`, `service`, `events` (9) |
+| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics` (10) |
 | ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `floor`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |

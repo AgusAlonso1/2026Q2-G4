@@ -34,6 +34,8 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
    los meses que superan la retención, por el gateway endpoint.
 8. El extracto de un mes archivado lo arma la API leyendo ese objeto de S3; las exportaciones
    del histórico también quedan en el bucket (`exports/`).
+9. Los meses archivados se consultan con SQL desde Athena: Glue cataloga `transaction-history/`
+   como la tabla `asientos`, y los resultados quedan cifrados en `athena-results/`.
 
 Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions**: el workflow
 **Deploy** aplica todo el Terraform en la cuenta de AWS cuyos secrets tenga el repositorio, y
@@ -283,6 +285,43 @@ Después, entrar por `website_url`:
    direcciones de `NOTIFICATION_EMAILS` les llega la alarma `ledger-webhook-dlq`. Después,
    volver a la URL correcta y vaciar la DLQ (**SQS → ledger-webhook-dlq → Purge**).
 
+6. **Análisis del archivo con Athena.** Athena sólo ve los meses archivados, así que primero
+   tiene que haber alguno. Desde la tarjeta *Cierre contable y archivado* de *Operación*:
+   **Sembrar mes anterior** (necesita otra cuenta de usuario y saldo en la propia) y después
+   **Agendar archivado**. El archivador lo sube a S3 en su próxima ventana (19:25 a 21:30,
+   hora de Buenos Aires); para no esperarla, levantarlo a mano y volver a bajarlo cuando
+   termine:
+
+   ```bash
+   aws ecs update-service --cluster ledger-cluster --service ledger-archive --desired-count 1
+   aws ecs update-service --cluster ledger-cluster --service ledger-archive --desired-count 0
+   ```
+
+   Después, en la consola de Athena (`terraform output analytics` tiene la URL):
+
+   1. En el editor, elegir el workgroup **`ledger`** (arriba a la derecha). Usa la base
+      `ledger` y deja los resultados en `athena-results/`, cifrados; la configuración la fija
+      el workgroup.
+   2. En **Saved queries**, abrir y correr:
+
+      | Consulta | Qué muestra |
+      |---|---|
+      | `partida-doble` | Por mes: asientos, órdenes y la suma, que tiene que dar 0 (`cuadra = true`) |
+      | `volumen-mensual` | Órdenes y pesos movidos por mes y por tramo |
+      | `cuentas-mas-activas` | Las 20 cuentas con más órdenes, con lo que entró y salió |
+      | `movimientos-de-cuenta` | Los movimientos archivados de una cuenta; pide `cuenta_id` |
+
+   O por CLI:
+
+   ```bash
+   aws athena start-query-execution --work-group ledger \
+     --query-string "SELECT periodo, count(*) AS asientos, sum(monto_centavos) AS suma FROM ledger.asientos GROUP BY periodo"
+   aws athena get-query-results --query-execution-id <id>
+   ```
+
+   Un mes recién archivado aparece en la próxima consulta, sin correr nada más: la tabla
+   proyecta sus particiones (ver [Análisis del archivo](ARCHITECTURE.md#análisis-del-archivo-con-athena)).
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
@@ -387,11 +426,13 @@ Internet y sólo la API sale a Internet.
 
 ### [`modules/storage`](terraform/modules/storage)
 
-Bucket privado del proyecto: el archivo del ledger (`transaction-history/`) y las exportaciones
-(`exports/`). Versionado, cifrado con la clave KMS del proyecto (SSE-KMS con bucket key), con
-bloqueo de acceso público y una política que rechaza cualquier pedido que no venga por HTTPS.
-El lifecycle borra las versiones reemplazadas a los 30 días y pasa el archivo a STANDARD_IA a
-los 30 días y a GLACIER al año.
+Bucket privado del proyecto: el archivo del ledger (`transaction-history/`), las exportaciones
+(`exports/`) y los resultados de Athena (`athena-results/`). Versionado, cifrado con la clave
+KMS del proyecto (SSE-KMS con bucket key), con bloqueo de acceso público y una política que
+rechaza cualquier pedido que no venga por HTTPS. El lifecycle borra las versiones reemplazadas
+a los 30 días, pasa el archivo a STANDARD_IA a los 30 días y a GLACIER Instant Retrieval al año
+(Athena no lee GLACIER Flexible Retrieval), y expira los resultados de Athena a los 7 días
+(con el versionado, se borran del todo 30 días después).
 
 El bucket lo crea `make apply` con la AWS CLI y el módulo lo configura (ver
 [Buckets de S3](#buckets-de-s3-los-crea-la-aws-cli)).
@@ -443,6 +484,20 @@ alertas con suscripciones de email recibe la alarma de la DLQ (ver
 **Recursos:** `aws_sns_topic.events`, `aws_sns_topic.alerts`, `aws_sqs_queue.webhook` y
 `webhook_dlq`, `aws_lambda_function.this` (webhook), `aws_lambda_event_source_mapping.webhook`,
 `aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
+
+---
+
+### [`modules/analytics`](terraform/modules/analytics)
+
+Consultas SQL sobre el archivo, sin tocar RDS. Una base del catálogo de Glue con la tabla
+externa `asientos` sobre `transaction-history/` (JSON comprimido, particionada por `periodo`
+con *partition projection*), un workgroup de Athena que fuerza dónde y cómo se guardan los
+resultados (en `athena-results/`, SSE-KMS con la clave del proyecto) y pone un tope de bytes
+escaneados por consulta, y cuatro consultas guardadas (ver
+[Análisis del archivo](ARCHITECTURE.md#análisis-del-archivo-con-athena)).
+
+**Recursos:** `aws_glue_catalog_database.this`, `aws_glue_catalog_table.asientos`,
+`aws_athena_workgroup.this` y `aws_athena_named_query.this`.
 
 ---
 
@@ -509,7 +564,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `coalesce` | `organization/locals.tf` | Usa la clave o la URL que se pasó por variable y, si está vacía, la generada o la propia |
 | `tostring` | `organization/locals.tf` | El puerto de la API como variable de entorno |
 | `concat` | `organization/network.tf` | Asocia el endpoint de S3 a las tablas de app y archivado |
-| `replace` | `organization/network.tf`, `modules/security_groups/main.tf`, `modules/database/main.tf` | Arma nombres: el `Name` de cada endpoint y de cada regla (`app_in_nlb` → `ledger-app-in-nlb`), y el de la base sin guiones |
+| `replace` | `organization/network.tf`, `modules/security_groups/main.tf`, `modules/database/main.tf`, `modules/analytics/main.tf` | Arma nombres: el `Name` de cada endpoint y de cada regla (`app_in_nlb` → `ledger-app-in-nlb`), y el de la base de RDS y la de Glue sin guiones |
 | `try` | `modules/security_groups/main.tf` | Usa el SG de destino sólo si el `peer` de la regla es otro grupo |
 | `format` | `modules/storage/main.tf`, `modules/website/main.tf`, `modules/auth/main.tf`, `modules/database/outputs.tf` | Arma los nombres de los buckets, la URL del dominio de Cognito y la `DB_URL` |
 | `jsonencode` | `organization/network.tf`, `organization/kms.tf`, `organization/secrets.tf`, `modules/storage/main.tf`, `modules/website/main.tf`, `modules/service/main.tf`, `modules/auth/main.tf` | Las políticas de los endpoints, de la clave KMS y de los buckets, el contenido de cada secreto, el `config.json` del frontend, las `container_definitions` y el formato de los access logs |
@@ -526,6 +581,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
 | `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
+| `can`, `regex`, `endswith` | `modules/analytics/variables.tf` | Valida que `history_start` sea un mes `AAAA-MM` y que los prefijos terminen en `/` |
 
 ### Meta-argumentos utilizados
 
@@ -539,6 +595,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
 | `for_each` | `modules/events/main.tf` | La Lambda del webhook con su zip y su log group, y una suscripción de alertas por cada email de `notification_emails` |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
+| `for_each` | `modules/analytics/main.tf` | Una consulta guardada de Athena por entrada de `local.queries` |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
@@ -552,16 +609,18 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 ### Validación de variables
 
 Los bloques `validation` comprueban los valores de entrada: limitan `archive_schedule` a 0 o 1
-tarea, `log_retention_days` a los valores que admite CloudWatch y `target_capacity` al rango de
-1 a 100. Están en `organization/variables.tf`, `modules/auth/variables.tf`,
-`modules/service/variables.tf` y `modules/capacity/variables.tf`, y un valor inválido falla en
-el `plan`, no a mitad del apply.
+tarea, `log_retention_days` a los valores que admite CloudWatch, `target_capacity` al rango de
+1 a 100 y, en Athena, el formato de `history_start`, los prefijos y el tope de bytes escaneados
+(Athena no acepta menos de 10 MiB). Están en `organization/variables.tf`,
+`modules/auth/variables.tf`, `modules/service/variables.tf`, `modules/capacity/variables.tf` y
+`modules/analytics/variables.tf`, y un valor inválido falla en el `plan`, no a mitad del apply.
 
 ### Bloques `dynamic`
 
 | Dónde | Para qué |
 |---|---|
-| `modules/storage/main.tf` | Una regla de lifecycle por prefijo, con sus transiciones |
+| `modules/storage/main.tf` | Una regla de lifecycle por prefijo, con sus transiciones, y otra por cada prefijo que expira (`athena-results/`) |
+| `modules/analytics/main.tf` | Las columnas de la tabla de Glue, desde una lista en `locals` |
 | `modules/service/main.tf` | El bloque `load_balancer` del servicio sólo si tiene target group (la API sí, el archivador no) |
 
 ### Data sources
@@ -593,6 +652,7 @@ el `plan`, no a mitad del apply.
 │   └── modules/           # módulos propios
 │       ├── security_groups/
 │       ├── storage/       # bucket privado: archivo del ledger
+│       ├── analytics/     # Glue + Athena: consultas SQL sobre el archivo
 │       ├── website/       # bucket público: frontend
 │       ├── database/
 │       ├── load_balancer/

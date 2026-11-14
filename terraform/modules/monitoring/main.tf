@@ -124,8 +124,11 @@ locals {
     }
   }
 
-  # La alarma de la DLQ la crea el módulo events; acá sólo se muestra en el panel de alarmas.
-  dlq_alarm_arn = "arn:aws:cloudwatch:${local.region}:${data.aws_caller_identity.current.account_id}:alarm:${var.name_prefix}-webhook-dlq"
+  # Las alarmas de las colas las crea el módulo events; acá sólo se muestran en el panel de alarmas.
+  external_alarm_arns = [
+    for nombre in var.external_alarm_names :
+    "arn:aws:cloudwatch:${local.region}:${data.aws_caller_identity.current.account_id}:alarm:${nombre}"
+  ]
 
   queries = {
     api-pedidos-lentos = {
@@ -155,7 +158,7 @@ locals {
       QUERY
     }
     errores-de-los-binarios = {
-      log_groups = [var.api_log_group_name, var.archive_log_group_name]
+      log_groups = [var.api_log_group_name, var.archive_log_group_name, var.exports_log_group_name]
       query      = <<-QUERY
         fields @timestamp, @log, msg, error
         | filter level = "ERROR"
@@ -179,6 +182,7 @@ locals {
   ecs         = ["ClusterName", var.cluster_name]
   api_svc     = concat(local.ecs, ["ServiceName", var.api_service_name])
   archive_svc = concat(local.ecs, ["ServiceName", var.archive_service_name])
+  exports_svc = concat(local.ecs, ["ServiceName", var.exports_service_name])
   nlb_dims    = ["TargetGroup", var.target_group_arn_suffix, "LoadBalancer", var.nlb_arn_suffix]
   db_dims     = ["DBInstanceIdentifier", var.db_instance_identifier]
 
@@ -189,6 +193,7 @@ locals {
         concat(["ECS/ContainerInsights", "RunningTaskCount"], local.api_svc, [{ label = "API corriendo" }]),
         concat(["ECS/ContainerInsights", "DesiredTaskCount"], local.api_svc, [{ label = "API deseadas" }]),
         concat(["ECS/ContainerInsights", "RunningTaskCount"], local.archive_svc, [{ label = "Archivador" }]),
+        concat(["ECS/ContainerInsights", "RunningTaskCount"], local.exports_svc, [{ label = "Exportador" }]),
       ]
     },
     {
@@ -257,10 +262,12 @@ locals {
       ]
     },
     {
-      title = "Cola del webhook", x = 0, y = 22, w = 8, stat = "Maximum", lines = []
+      title = "Colas: mensajes esperando", x = 0, y = 22, w = 8, stat = "Maximum", lines = []
       metrics = [
-        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.webhook_queue_name, { label = "en la cola" }],
-        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.webhook_dlq_name, { label = "en la DLQ" }],
+        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.webhook_queue_name, { label = "webhook" }],
+        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.webhook_dlq_name, { label = "DLQ del webhook" }],
+        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.exports_queue_name, { label = "exportaciones" }],
+        ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", var.exports_dlq_name, { label = "DLQ de exportaciones" }],
       ]
     },
     {
@@ -343,7 +350,7 @@ resource "aws_cloudwatch_dashboard" "this" {
           height = 3
           properties = {
             title  = "Alarmas"
-            alarms = concat([for a in aws_cloudwatch_metric_alarm.this : a.arn], [local.dlq_alarm_arn])
+            alarms = concat([for a in aws_cloudwatch_metric_alarm.this : a.arn], local.external_alarm_arns)
           }
         },
       ],

@@ -23,6 +23,27 @@ variable "archive_service_name" {
   type        = string
 }
 
+variable "exports_service_name" {
+  description = "Servicio de ECS del exportador."
+  type        = string
+}
+
+variable "exports_queue_name" {
+  description = "Cola SQS de exportaciones."
+  type        = string
+}
+
+variable "exports_dlq_name" {
+  description = "DLQ de las exportaciones."
+  type        = string
+}
+
+variable "external_alarm_names" {
+  description = "Alarmas que crean otros módulos (las de las colas, en events), para mostrarlas en el panel de alarmas del dashboard."
+  type        = list(string)
+  default     = []
+}
+
 variable "api_min_tasks" {
   description = "Mínimo de tareas de la API. Con menos targets sanos en el NLB, la alarma se dispara."
   type        = number
@@ -40,6 +61,11 @@ variable "api_log_group_name" {
 
 variable "archive_log_group_name" {
   description = "Log group del archivador, para su consulta guardada."
+  type        = string
+}
+
+variable "exports_log_group_name" {
+  description = "Log group del exportador, para la consulta de errores de los binarios."
   type        = string
 }
 

@@ -40,6 +40,11 @@ case "${1:-}" in
       create "$state"
       aws s3api put-bucket-versioning --bucket "$state" --versioning-configuration Status=Enabled
     fi
+    # Como los demás buckets, sólo por HTTPS: el state tiene los secretos que genera Terraform.
+    # Se aplica siempre (es idempotente) para que también la tengan los buckets creados antes.
+    aws s3api put-bucket-policy --bucket "$state" --policy "$(jq -cn --arg b "arn:aws:s3:::$state" \
+      '{Version: "2012-10-17", Statement: [{Sid: "DenyInsecureTransport", Effect: "Deny", Principal: "*",
+        Action: "s3:*", Resource: [$b, "\($b)/*"], Condition: {Bool: {"aws:SecureTransport": "false"}}}]}')"
     echo "$state"
     ;;
   create)

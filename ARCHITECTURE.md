@@ -10,8 +10,9 @@ El sistema es el núcleo transaccional de un PSP de una sola empresa. Cada usuar
 cuenta virtual con la que transfiere a otras cuentas del PSP, ingresa dinero desde su banco y
 lo retira hacia afuera a través de un proveedor de infraestructura financiera. Cada operación
 se liquida dentro del mismo request, de forma idempotente, contra un ledger de partida doble.
-Lo único diferido es lo que ningún usuario espera: el archivado de los meses viejos a S3 y
-el webhook de cada orden terminada, que sale por SNS y SQS después de responder.
+Lo único diferido es lo que ningún usuario espera en el momento: el archivado de los meses
+viejos a S3, el webhook de cada orden terminada, que sale por SNS y SQS después de responder, y
+las exportaciones, que arma un servicio aparte y avisa por mail.
 
 Restricciones que guían el diseño:
 
@@ -21,8 +22,9 @@ Restricciones que guían el diseño:
 - **Reproducible desde el pipeline**: todo vive en código y se despliega y destruye desde
   GitHub Actions, en cualquier cuenta, sin editar nada. Los nombres que tienen que ser únicos
   llevan el ID de la cuenta.
-- **Costo acotado**: un solo NAT, la API en Graviton (más barato que x86 a igual tamaño) y el
-  archivador en una `t3.medium`, apagada fuera de su ventana.
+- **Costo acotado**: un solo NAT, la API en Graviton (más barato que x86 a igual tamaño), el
+  archivador en una `t3.medium`, apagada fuera de su ventana, y el exportador en `t3.small`, en
+  cero mientras no haya exportaciones.
 
 ## 2. Red
 
@@ -32,7 +34,7 @@ VPC `10.0.0.0/16` con el módulo `terraform-aws-modules/vpc/aws`, dos AZ y cuatr
 |---|---|---|---|
 | `public` | `10.0.0.0/24`, `10.0.1.0/24` | IGW | NLB, NAT |
 | `app` | `10.0.10.0/24`, `10.0.11.0/24` | NAT, gateway endpoint de S3 | Instancias y tareas de la API, ENIs de los interface endpoints |
-| `archive` | `10.0.12.0/24`, `10.0.13.0/24` | Sólo el gateway endpoint de S3 | Instancias y tareas del archivador |
+| `archive` | `10.0.12.0/24`, `10.0.13.0/24` | Sólo el gateway endpoint de S3 | Instancias y tareas de los workers: el archivador y el exportador |
 | `data` | `10.0.20.0/24`, `10.0.21.0/24` | Ninguna | RDS (primaria y standby) |
 
 El aislamiento entre capas lo imponen los security groups, que se referencian entre sí:
@@ -40,11 +42,16 @@ El aislamiento entre capas lo imponen los security groups, que se referencian en
 | SG | Entra | Sale |
 |---|---|---|
 | `nlb` | 80 desde Internet | La API (puerto de la app) |
-| `app` | Puerto de la app desde `nlb` | `data` (5432), S3 (443), `endpoints` (443: SNS), Internet por el NAT (443 y 80: proveedor) |
+| `app` | Puerto de la app desde `nlb` | `data` (5432), S3 (443), `endpoints` (443: SNS y SQS), Internet por el NAT (443 y 80: proveedor) |
 | `archive` | Nada | `data` (5432), S3 (443) |
-| `data` | 5432 desde `app` y `archive` | Nada |
+| `exports` | Nada | `data` (5432), S3 (443), `endpoints` (443: SQS y SNS) |
+| `data` | 5432 desde `app`, `archive` y `exports` | Nada |
 | `host` | Nada | `endpoints` (443), S3 (443) |
-| `endpoints` | 443 desde `host` y `app` | Nada |
+| `endpoints` | 443 desde `host`, `app` y `exports` | Nada |
+
+El exportador comparte las subredes del archivador pero no su grupo: es el único de los dos que
+usa la cola y SNS, y con un grupo común el archivador, que borra datos del ledger, también
+llegaría a esos endpoints.
 
 Las instancias (`host`) no aceptan ninguna conexión entrante: no hay SSH.
 
@@ -99,30 +106,32 @@ CloudFront o API Gateway), así que la validación de cada pedido queda en la ap
 
 ## 3. Cómputo
 
-La API y el archivador corren en **ECS con launch type EC2**, desde la misma imagen (cada
-servicio elige `/api` o `/archivador`), construida para amd64 y arm64. Cada servicio tiene su
-propio ASG, en sus propias subredes:
+La API, el archivador y el exportador corren en **ECS con launch type EC2**, desde la misma
+imagen (cada servicio elige `/api`, `/archivador` o `/exportador`), construida para amd64 y
+arm64. Cada servicio tiene su propio ASG, en sus propias subredes:
 
-| | API | Archivador |
-|---|---|---|
-| Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet |
-| Tareas | 2 a 5, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado |
-| Tipo de instancia | `c7g.large` (Graviton), dos tareas por instancia | `t3.medium`, una tarea |
-| Instancias | Las que hagan falta para esas tareas, con lugar libre | 0 fuera de la ventana |
-| Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 |
+| | API | Archivador | Exportador |
+|---|---|---|---|
+| Subredes (instancias y tareas) | `app`, con NAT | `archive`, sin ruta a Internet | `archive`, sin ruta a Internet |
+| Tareas | 2 a 5, escalan por CPU (60 %) | 0, y 1 durante la ventana de archivado | 0 a 2, escalan por la cola `ledger-exports` |
+| Tipo de instancia | `c7g.large` (Graviton), dos tareas por instancia | `t3.medium`, una tarea | `t3.small`, una tarea |
+| Instancias | Las que hagan falta para esas tareas, con lugar libre | 0 fuera de la ventana | 0 con la cola vacía |
+| Tráfico | NLB → IP de cada tarea | Ninguno: sólo sale a la base y a S3 | Ninguno: sólo sale a la base, a S3 y a los endpoints de SQS y SNS |
 
-Hay **dos niveles de escalado**: el servicio decide cuántas tareas quiere (por CPU o por
-horario) y el capacity provider agrega o apaga instancias para alojarlas. Con red `awsvpc`
+Hay **dos niveles de escalado**: el servicio decide cuántas tareas quiere (por CPU, por horario
+o por la cola) y el capacity provider agrega o apaga instancias para alojarlas. Con red `awsvpc`
 cada tarea tiene su propia ENI y su security group, y la instancia se queda una para ella: una
 `c7g.large` (3 ENIs) aloja dos tareas, y la `t3.medium` del archivador, una sola: la tarea pide
-3 GB de los 4 que tiene.
+3 GB de los 4 que tiene. La `t3.small` del exportador también aloja una: su tarea pide 1 GB, y
+de los 2 GB de la instancia el agente de ECS y el sistema se quedan con lo suficiente para que
+no entre otra.
 
 El capacity provider de la API apunta a tener ocupado el 80 % de las instancias
 (`target_capacity`), para dejar lugar de reserva: la primera tarea nueva de un scale-out o de un
 deploy suele encontrar dónde arrancar sin esperar, y el capacity provider lanza la siguiente
 instancia en segundo plano. No es una garantía: si llegan más tareas de las que entran en esa
-reserva, las que sobran esperan a que la instancia nueva se registre en el cluster. El del archivador queda en 100 %: no tiene picos, y fuera de su
-ventana baja a cero instancias.
+reserva, las que sobran esperan a que la instancia nueva se registre en el cluster. Los del archivador y el exportador quedan en 100 %: nadie espera
+su arranque en el momento, y sin trabajo bajan a cero instancias.
 
 **Por qué EC2 y no Fargate.** La API es una carga base constante: un PSP no baja a cero y
 siempre hay dos tareas corriendo. Para eso EC2 sale más barato por vCPU que Fargate (y en una
@@ -144,7 +153,9 @@ período es una fila de `tareas` que se toma con `FOR UPDATE SKIP LOCKED` y, si 
 interrumpe, se reintenta, así que una interrupción sólo lo atrasa. Se configuraría con un ASG
 con `mixed_instances_policy` sin On-Demand, varios tipos chicos para tener más pools de Spot y
 `ECS_ENABLE_SPOT_INSTANCE_DRAINING=true`, para que ECS saque la tarea con el aviso de dos
-minutos.
+minutos. El exportador también es burstable, una `t3.small`: trabaja a ráfagas, cuando hay
+exportaciones, y arma el CSV en streaming, así que medio vCPU y 1 GB le alcanzan. Sería el otro
+candidato a Spot: una tarea interrumpida devuelve su exportación a la cola.
 
 **Agente de ECS.** El `user_data` de las instancias, además del cluster, configura
 `ECS_IMAGE_PULL_BEHAVIOR=prefer-cached`, que reutiliza la imagen si ya está en el host (es
@@ -155,16 +166,17 @@ instancia tiene permisos que la tarea no necesita.
 
 El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
 subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
-`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`, `sns`); las capas de la
+`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`, `sns`, `sqs`); las capas de la
 imagen vienen de S3 por el gateway endpoint. Las ENIs de los endpoints están en las subredes de `app`, pero se
 llega a ellas desde cualquier subred de la VPC: lo que limita quién entra es su security group,
-que acepta a los hosts de ECS y, para publicar en SNS, a las tareas de la API. Las instancias de
+que acepta a los hosts de ECS y, para publicar en SNS y usar la cola de exportaciones, a las
+tareas de la API y del exportador. Las instancias de
 la API usan los mismos endpoints, así que el NAT sólo lo usan las tareas de la API (proveedor y
 claves de Cognito).
 
 Todo el tráfico de la VPC hacia S3 de la región pasa por el gateway endpoint, también el de las
 subredes de `app`. Su política sólo deja llegar al bucket del proyecto y al de las capas de ECR:
-el archivador y las instancias, que no tienen otra salida, no pueden copiar datos a un bucket de
+los workers y las instancias, que no tienen otra salida, no pueden copiar datos a un bucket de
 otra cuenta. El security group no alcanza para eso, porque la prefix list de S3 incluye todos
 los buckets. Las tareas de la API sí salen a Internet por el NAT, así que para ellas la política
 sólo cubre S3 de esta región. El bucket, por su lado, rechaza cualquier pedido que no venga por
@@ -187,16 +199,20 @@ toma la recomendada en cada apply, pero sólo la usan las instancias nuevas. No 
 Un deploy con cambios en el backend sube una imagen nueva y crea una revisión de cada task
 definition. ECS reemplaza las tareas de a tandas: nunca baja de la mitad de las deseadas ni pasa
 del doble. El ASG admite una instancia más que el máximo de tareas, y eso alcanza para ese doble
-en los dos servicios: 6 `c7g.large` alojan 12 tareas de la API y 2 `t3.medium`, dos del
+en la API y el archivador: 6 `c7g.large` alojan 12 tareas de la API y 2 `t3.medium`, dos del
 archivador. Por eso la API llega a 5 tareas y no más: su ASG queda en 6, el máximo que AWS
-Academy deja poner en un ASG. Una
+Academy deja poner en un ASG. El exportador no duplica: ECS para sus tareas antes de arrancar
+las nuevas (`deployment_minimum_healthy_percent = 0`, `deployment_maximum_percent = 100`).
+Nadie espera su respuesta, y al recibir SIGTERM cada tarea devuelve a la cola lo que estaba
+armando sin gastar un intento, así que el deploy sólo atrasa unos segundos esas exportaciones
+y no necesita instancias de más. Una
 tarea nueva de la API recibe tráfico recién cuando pasa el health check del NLB, y si las
 nuevas no arrancan, el circuit breaker vuelve solo a la revisión anterior. Eso vale mientras la revisión nueva no haya
 aplicado una migración: un binario no arranca contra una base con migraciones que no conoce,
 así que las tareas viejas que siguen corriendo no se caen, pero las que ECS intente levantar con
-la revisión anterior fallan, y la salida es otro deploy hacia adelante. El tope de conexiones a
-la base de cada tarea se calcula como si los dos servicios llegaran a la vez al doble de su
-máximo, así que un deploy no agota las conexiones de RDS.
+la revisión anterior fallan, y la salida es otro deploy hacia adelante. Cada servicio tiene su
+pool de conexiones a la base por tarea, y el plan falla si todos juntos, en su máximo y con las
+tareas de más de un deploy, superan las de RDS (ver *Conexiones* en [Datos](#4-datos)).
 
 El cluster tiene **Container Insights**: CPU, memoria y red por servicio y por tarea en
 CloudWatch, sin instalar nada en las instancias.
@@ -209,6 +225,65 @@ paquetes, así que lo que podría aparecer está en las pocas librerías del sis
 avanzado (Amazon Inspector) revisa además las dependencias de Go, pero se cobra por imagen.
 No bloquea el deploy: informa, y como los tags son inmutables cada versión queda escaneada
 una sola vez, la vez que se sube.
+
+### El exportador, aparte de la API
+
+Las exportaciones las arma el exportador (`cmd/exportador`), un servicio de ECS propio que
+consume la cola `ledger-exports`. La API sólo registra la exportación, manda su id a la cola y
+responde: con la cola configurada no consume ni barre nada. Sin cola (al correr local), la API
+sigue armándolas ella, tomándolas de la tabla.
+
+Está separado porque una exportación es trabajo pesado y de fondo en el mismo lugar donde se
+liquidan los pagos:
+
+- **No compite con la liquidación.** Una exportación contable recorre un mes entero de asientos
+  y del archivo. En las tareas de la API se llevaría CPU, memoria y conexiones a RDS que
+  necesitan los pagos, justo cuando hay muchas exportaciones, que suele ser cuando hay mucho
+  volumen.
+- **No distorsiona el escalado de la API.** La API escala por CPU: con las exportaciones
+  adentro, una tanda de exportaciones haría subir tareas de la API, en `c7g.large`, para trabajo
+  que nadie espera en el momento, y bajar mientras todavía hay pagos en curso.
+- **Escala con lo que importa.** La medida del trabajo pendiente es la profundidad de la cola,
+  no la CPU, y el exportador escala con ella, de 0 a 2 tareas (ver
+  [Escalado por cola](#escalado-por-cola)).
+- **Menos superficie.** Corre en las subredes de `archive`, sin salida a Internet, con su propio
+  security group: llega a la base, a S3 y a los endpoints de SQS y SNS, y a nada más. No tiene
+  las claves de la API: su secreto, `ledger/exports`, sólo tiene la `DB_URL`.
+
+Cada tarea atiende **dos mensajes a la vez** (`EXPORTACIONES_CONSUMIDORES`), con dos goroutines
+que hacen long polling sobre la cola, y una tercera que barre las pendientes abandonadas. El
+reclamo de la fila con su token (ver *Exportaciones* en [Datos](#4-datos)) es lo que hace seguro
+que dos consumidores, de la misma tarea o de dos distintas, reciban el mismo mensaje. Al
+apagarse, cada consumidor suelta su exportación, devuelve el intento y la vuelve a encolar; el
+proceso espera hasta 25 segundos, dentro de los 30 que ECS da antes de matarlo.
+
+### Escalado por cola
+
+El servicio del exportador escala con dos alarmas de CloudWatch sobre `ledger-exports`, cada una
+con una política de pasos de Application Auto Scaling
+([`modules/service`](terraform/modules/service), `queue_scaling`):
+
+- **Subir** (`ledger-exports-queue-out`): si en el último minuto hubo mensajes visibles
+  (`ApproximateNumberOfMessagesVisible > 0`), una tarea más; dos si había 10 o más. Mientras
+  sigue en alarma, se vuelve a aplicar, con un cooldown de 5 minutos, que es lo que tarda en
+  arrancar una instancia, hasta el máximo de 2.
+- **Bajar** (`ledger-exports-queue-in`): cuando los mensajes visibles, en curso y demorados
+  suman 0 durante 10 minutos, deja el servicio en 0. Contar los en curso evita apagar una tarea
+  que está armando una exportación, y los demorados, bajar a cero mientras una exportación espera
+  un archivado (vuelve a la cola con 5 minutos de demora).
+
+**El mínimo es 0.** Las exportaciones son esporádicas y nadie las espera con la pantalla
+abierta: el titular recibe un mail cuando está lista. Tener una `t3.small` prendida todo el día
+para eso no se justifica, y en AWS Academy además ocupa una de las pocas instancias que pueden
+correr a la vez. El costo es la demora de la primera exportación después de un rato sin uso,
+de **5 a 20 minutos**: SQS publica la métrica una vez por minuto (si la cola estuvo inactiva
+unas horas, tarda varios minutos más en volver a publicarla), la alarma la evalúa, ECS pide la
+tarea, el capacity provider levanta la instancia y el agente baja la imagen. Con el exportador
+ya en marcha, las siguientes salen en segundos.
+
+El máximo es 2 por el mismo límite de instancias del laboratorio: dos tareas son cuatro
+exportaciones a la vez. En una cuenta propia, el máximo sube y el paso grande de la política
+pasa a ser proporcional a la cola.
 
 ## 4. Datos
 
@@ -276,10 +351,11 @@ cambian, así que el pie queda en memoria: un extracto trae de S3 decenas o cien
 importar cuánto pese el mes ni el bloque. Las respuestas son las mismas que cuando el mes está
 en la base.
 
-**Exportaciones.** `POST /exportaciones` registra la solicitud y responde enseguida; un proceso
-de cada tarea de la API la toma (`FOR UPDATE SKIP LOCKED`, con un plazo de 15 minutos por si la
-tarea muere a mitad de camino), recorre los meses de la base y del archivo y sube el resultado a
-`exports/` en streaming. El resultado es un CSV pensado para abrirse en una planilla: fecha,
+**Exportaciones.** `POST /exportaciones` registra la solicitud en `solicitudes_exportacion`,
+manda su id a la cola SQS `ledger-exports` y responde enseguida. El exportador escucha esa
+cola (long polling) y, al recibir un id, arma la exportación: recorre los meses de la base y del
+archivo y sube el resultado a `exports/` en streaming. Los alias de las dos cuentas de cada fila
+salen en la misma consulta que los asientos, así que armarla usa una sola conexión. El resultado es un CSV pensado para abrirse en una planilla: fecha,
 cuenta, operación, contraparte (por alias), monto en pesos y número de orden. Lleva BOM para que
 Excel lo lea como UTF-8, y `;` como separador y coma decimal, que es lo que espera Excel con la
 configuración regional de Argentina. Las fechas van en hora de Argentina, la misma que muestra la
@@ -291,6 +367,37 @@ directo de S3, sin pasar por la API. Lo que dura días es el archivo
 (`export_retention_days`), no el link: cada descarga firma uno nuevo. Un link largo no conviene
 porque cualquiera que lo tenga descarga el extracto, y además una URL prefirmada deja de valer
 cuando vencen las credenciales temporales del rol que la firmó.
+
+La tabla guarda el estado, que es lo que muestra la app, y la cola reparte el trabajo y lo
+reintenta:
+
+- **Una sola tarea por exportación.** Al recibir el id, la tarea reclama la fila con un token
+  (`tomada_por`), y mientras trabaja un latido renueva el reclamo y la visibilidad del mensaje.
+  SQS entrega al menos una vez: un mensaje repetido que encuentra la fila tomada por una tarea
+  viva, o ya resuelta, se descarta sin gastar un intento, y uno que llega antes de que termine
+  la espera de un reintento se vuelve a ocultar hasta entonces. Sólo cierra la exportación, y avisa al
+  titular, la tarea que tiene el token, así que el mail sale a lo sumo una vez. Lo mismo vale
+  para dos consumidores de la misma tarea.
+- **Reintentos.** Si algo falla, la tarea suelta el reclamo y vuelve a mostrar el mensaje al
+  minuto, a los 2 minutos, etc. Al agotar los intentos (`export_max_attempts`, 3) la marca
+  `fallida`, manda su id a la DLQ `ledger-exports-dlq`, cuya alarma avisa a operación, y le
+  avisa al titular por mail que no se pudo armar y que la puede pedir de nuevo. Un mes
+  que se está archivando (503) no gasta un intento: se vuelve a encolar con 5 minutos de demora,
+  y sólo si sigue así después de un día cuenta como un error más. Si la tarea se apaga (deploy o
+  scale-in), devuelve el intento y vuelve a encolar el mensaje para otra.
+- **Nada queda colgado.** Si una tarea muere en el medio, el mensaje reaparece al vencer su
+  visibilidad y lo toma otra. Si el envío a SQS falla, o algo deja una pendiente sin mensaje,
+  cada 5 minutos el barrido del exportador la vuelve a encolar. Como el barrido corre en el
+  exportador, con el servicio en 0 una pendiente sin mensaje espera hasta que la próxima
+  exportación lo levante; el SDK ya reintenta el envío antes de darlo por fallido, así que el
+  caso es raro. Además, la cola pasa por su cuenta a la DLQ un mensaje que se recibió cinco veces
+  más que los intentos sin resolverse, y una alarma avisa si el mensaje más viejo lleva más de
+  una hora en la cola.
+- **Por qué tabla y cola.** El estado tiene que estar en la base de todos modos (la lista de
+  exportaciones, la descarga, el link del mail), y una cola no se puede consultar. La cola suma
+  lo que a la tabla sola le faltaba: llevar el pedido a cualquier tarea en el momento,
+  reintentar con espera y apartar lo que no se pudo hacer en una DLQ con alarma, igual que el
+  webhook.
 
 ### Análisis del archivo con Athena
 
@@ -331,9 +438,19 @@ completa de una cuenta) se responden con SQL sobre el archivo, en Athena
   consulta Athena: el análisis es para operación y auditoría, no para el camino de un pago.
 
 **Conexiones.** Cada tarea abre como máximo `pool_max_conns` conexiones, que va en la
-`DB_URL`. Se calcula repartiendo `db_max_connections` (60 por defecto, por debajo de las ~80 de
-una `db.t3.micro`) como si los dos servicios estuvieran a la vez en el doble de su máximo de
-tareas, que es el pico de un deploy.
+`DB_URL`, y cada servicio tiene la suya (`db_pool` en `locals.tf`), según lo que hace:
+
+| Servicio | Por tarea | Por qué | Pico de un deploy |
+|---|---|---|---|
+| API | 5 | Requests concurrentes | 10 tareas × 5 = 50 |
+| Archivador | 2 | Una por parte de Parquet en paralelo (`ARCHIVADO_PARALELISMO`) | 2 tareas × 2 = 4 |
+| Exportador | 3 | Una por consumidor, que tiene abierto el cursor de asientos, y una libre para el latido y el barrido | 2 tareas × 3 = 6 |
+
+La del exportador no puede ser una por consumidor: mientras los dos recorren un mes, el latido
+que renueva el reclamo esperaría a que se libere una, y otra tarea podría ganarle la exportación.
+La suma, 60, no puede pasar de `db_max_connections` (60 por defecto, por debajo de las ~80 de
+una `db.t3.micro`): si un cambio de pools o de tareas la supera, el plan falla con una
+`precondition`.
 
 ## 5. Secretos y cifrado
 
@@ -341,7 +458,8 @@ Las claves que usan los binarios (la `DB_URL` con la password de la base, la de 
 mock, la del proveedor y la del webhook) no van en la task definition, donde cualquiera con
 acceso a la consola o a `ecs:DescribeTaskDefinition` las vería. Terraform las genera
 (`random_password`) y las guarda en **Secrets Manager**, un secreto por servicio con sólo lo
-que ese servicio usa: `ledger/api` tiene las cinco, `ledger/archive` sólo la `DB_URL`.
+que ese servicio usa: `ledger/api` tiene las cinco, `ledger/archive` y `ledger/exports` sólo
+la `DB_URL`, cada una con el pool de su servicio.
 
 La task definition guarda la referencia, no el valor: cada variable es un `valueFrom` con
 `<arn del secreto>:<clave>::<version-id>`. El agente de ECS lee el secreto con el rol de
@@ -453,15 +571,22 @@ sumar una suscripción, sin tocar la API.
   descarta los `evento_id` repetidos, sólo si la firma es válida: si no, una firma falsa podría
   ocupar el id de un aviso real. El mensaje lleva `tipo` y `estado` como atributos, para que
   una suscripción nueva pueda filtrar sin leer el cuerpo.
-- **Alertas.** Un topic aparte, `ledger-alerts`, manda por email la alarma de la DLQ a las
-  direcciones de `notification_emails` (suscripciones de SNS que cada una confirma).
-- **Red y cifrado.** La API publica por el interface endpoint de SNS, sin pasar por el NAT. La
+- **Alertas.** Un topic aparte, `ledger-alerts`, manda por email las alarmas de las DLQ (la del
+  webhook y la de las exportaciones) y la de un mensaje que lleva más de una hora en
+  `ledger-exports` a las direcciones de `notification_emails` (suscripciones de SNS que cada una
+  confirma).
+- **Cola de exportaciones.** `ledger-exports` y su DLQ son del mismo módulo, aunque no cuelgan de
+  `ledger-events`: la API encola cada exportación y la consume el exportador (ver
+  [El exportador, aparte de la API](#el-exportador-aparte-de-la-api)).
+- **Red y cifrado.** La API publica por el interface endpoint de SNS y encola por el de SQS,
+  sin pasar por el NAT; el exportador, que no tiene NAT, usa los mismos endpoints. La
   Lambda corre fuera de la VPC y hace el POST directo a `webhook_url`. Los topics y las colas
   se cifran con la clave del proyecto, cuya política habilita a SNS (escribe en la cola) y a
   CloudWatch (publica las alarmas en el topic).
 - **Avisos a los titulares.** El topic `ledger-titulares` manda mails a cada titular; hoy, que
-  su exportación está lista, con el link a la pantalla de exportaciones de la app y no al
-  archivo. Al crear la cuenta, el frontend manda el ID token de Cognito (`X-Id-Token`); la API
+  su exportación está lista o que no se pudo armar, con el link a la pantalla de exportaciones
+  de la app y no al archivo. Los manda el exportador, en el mismo punto donde cierra la
+  exportación, y sólo el que tiene el reclamo, así que cada mail sale a lo sumo una vez. Al crear la cuenta, el frontend manda el ID token de Cognito (`X-Id-Token`); la API
   verifica su firma, que sea del mismo usuario y que el email esté verificado, y suscribe ese
   email con un *filter policy*
   `{"titular": ["<sub>"]}`. Cada aviso lleva el `sub` del titular como atributo, así que SNS
@@ -534,10 +659,10 @@ nuevo y Destroy no tendría qué destruir.
   tareas que ya tenían las claves siguen validando sesiones; una tarea nueva no puede hasta que
   vuelva el NAT. Con el proveedor por defecto, el mock de la propia API, las operaciones con el
   proveedor tampoco se completan, porque la API lo llama por el NLB.
-- **Ocho interface endpoints**, en las dos AZ: unos USD 0,16 por hora, más de tres veces el NAT.
-  Son el precio de que el archivador no tenga ninguna salida a Internet: la alternativa barata
-  es darle ruta al NAT, y entonces el único componente que borra datos del ledger podría
-  mandarlos a cualquier lado. También dejan las instancias de la API independientes del NAT
+- **Nueve interface endpoints**, en las dos AZ: unos USD 0,18 por hora, cuatro veces el NAT.
+  Son el precio de que los workers no tengan ninguna salida a Internet: la alternativa barata
+  es darles ruta al NAT, y entonces el único componente que borra datos del ledger y el que lee
+  meses enteros de movimientos podrían mandarlos a cualquier lado. También dejan las instancias de la API independientes del NAT
   para hablar con ECS, ECR y Logs, y a las tareas para publicar los eventos en SNS.
 - **La API en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
   certificado. El access token y las claves de operación (`X-Admin-Key`, `X-Mock-Key`) viajan
@@ -581,6 +706,11 @@ nuevo y Destroy no tendría qué destruir.
   la partición por JDBC en paralelo desde una réplica de lectura y escriba estos mismos archivos.
   Leer de la primaria con muchas conexiones competiría con la liquidación, y el standby
   Multi-AZ no acepta lecturas.
+- **El exportador arranca desde cero.** Con el servicio en 0, la primera exportación después de
+  un rato sin uso tarda de 5 a 20 minutos (ver [Escalado por cola](#escalado-por-cola)), y una
+  pendiente que quedó sin mensaje espera a que otra exportación lo levante. A cambio, no hay una
+  instancia prendida sin trabajo; con una tarea mínima la demora desaparece por el costo de una
+  `t3.small` todo el día.
 - tfsec marca estas decisiones; cada una está ignorada en el código con el motivo al lado.
 
 ## 11. Correcciones de entregas anteriores
@@ -588,7 +718,7 @@ nuevo y Destroy no tendría qué destruir.
 | Entrega | Corrección | Qué se hizo |
 |---|---|---|
 | TP1 | Avanzar con la propuesta 2, el núcleo transaccional elástico | Es este sistema |
-| TP1 | Un sistema financiero asíncrono obliga a lidiar con concurrencia y consistencia eventual | La concurrencia se resuelve en la base: bloqueo de fila sobre `saldos` en orden de id, idempotencia por restricción única y transacciones que escriben asientos y saldos juntos (ver [Datos](#4-datos)). La liquidación en sí es síncrona, dentro del request: el caso que fija la latencia es un pago con una persona esperando, y una cola agregaba más espera que la que ahorraba. Lo que sí es asíncrono es lo que depende de afuera: los egresos que el proveedor no confirma quedan en duda y se resuelven por consulta, y el archivado corre aparte, por horario |
+| TP1 | Un sistema financiero asíncrono obliga a lidiar con concurrencia y consistencia eventual | La concurrencia se resuelve en la base: bloqueo de fila sobre `saldos` en orden de id, idempotencia por restricción única y transacciones que escriben asientos y saldos juntos (ver [Datos](#4-datos)). La liquidación en sí es síncrona, dentro del request: el caso que fija la latencia es un pago con una persona esperando, y una cola agregaba más espera que la que ahorraba. Lo que sí es asíncrono es lo que depende de afuera o es trabajo de fondo: los egresos que el proveedor no confirma quedan en duda y se resuelven por consulta, el archivado corre aparte, por horario, y las exportaciones las arma un pool de workers que escala por profundidad de cola, con DLQ (ver [El exportador, aparte de la API](#el-exportador-aparte-de-la-api)) |
 | TP2 | Por la naturaleza de la aplicación, usar un network load balancer y no un application load balancer | NLB con targets `ip`. La justificación (latencia, picos sin calentamiento, conexiones largas, ISO 8583 sobre TCP, TLS de punta a punta e IP fija) está en [Entrada: por qué un NLB](#entrada-por-qué-un-nlb). La API escala por CPU, porque la métrica de requests por target es sólo del ALB |
 
 ## 12. Requisitos del TP
@@ -603,4 +733,4 @@ nuevo y Destroy no tendría qué destruir.
 | Pipeline (init, validate, plan, apply) | Workflows **Terraform** y **Deploy** en [`.github/workflows`](.github/workflows) |
 | Diagrama actualizado | [`img/arquitectura.png`](img/arquitectura.png), con su fuente editable en [`img/arquitectura.drawio`](img/arquitectura.drawio) |
 | Correcciones previas | [Sección 11](#11-correcciones-de-entregas-anteriores) |
-| Al menos un SQS o SNS (TP4) | [Eventos y notificaciones](#7-eventos-y-notificaciones): SNS, SQS con DLQ y Lambda |
+| Al menos un SQS o SNS (TP4) | [Eventos y notificaciones](#7-eventos-y-notificaciones): SNS, SQS con DLQ y Lambda; la cola de exportaciones con reintentos y DLQ, y el exportador que escala con ella ([Escalado por cola](#escalado-por-cola)) |

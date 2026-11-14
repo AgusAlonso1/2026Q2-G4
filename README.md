@@ -34,11 +34,16 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
    los meses que superan la retención, por el gateway endpoint, en archivos Parquet partidos por
    rangos de cuentas.
 8. El extracto de un mes archivado lo arma la API leyendo de S3 sólo las páginas del archivo que
-   tienen esa cuenta. Las exportaciones del histórico se arman en segundo plano en `exports/`, se
-   descargan con una URL prefirmada de S3 y el titular recibe un mail cuando están listas
-   (topic `ledger-titulares`).
-9. Los meses archivados se consultan con SQL desde Athena: Glue cataloga `transaction-history/`
-   como la tabla `asientos`, y los resultados quedan cifrados en `athena-results/`.
+   tienen esa cuenta. Una exportación del histórico, en cambio, la API sólo la registra y manda
+   su id a la cola SQS `ledger-exports`, por el interface endpoint de SQS: no la arma ella.
+9. La cola la consume el **exportador**, un servicio de ECS aparte en las mismas subredes que el
+   archivador, sin salida a Internet. Escala con la cola, de 0 a 2 tareas, y cada tarea arma dos
+   exportaciones a la vez: lee la base y el archivo y sube el CSV a `exports/` por el gateway
+   endpoint, con reintentos y una DLQ con alarma. El CSV se descarga con una URL prefirmada de
+   S3, y el titular recibe un mail cuando está listo, o si no se pudo armar (topic
+   `ledger-titulares`, por el interface endpoint de SNS).
+10. Los meses archivados se consultan con SQL desde Athena: Glue cataloga `transaction-history/`
+    como la tabla `asientos`, y los resultados quedan cifrados en `athena-results/`.
 
 Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions**: el workflow
 **Deploy** aplica todo el Terraform en la cuenta de AWS cuyos secrets tenga el repositorio, y
@@ -101,7 +106,8 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
 En la pestaña **Variables**, `NOTIFICATION_EMAILS`: emails separados por comas (por ejemplo
 `ana@gmail.com,beto@itba.edu.ar`). Cada uno se suscribe al topic SNS de alertas de operación
-(la alarma de la DLQ del webhook). Después del primer Deploy, a cada dirección le llega un mail
+(las alarmas de las DLQ del webhook y de las exportaciones, y la de una exportación que lleva más
+de una hora en la cola). Después del primer Deploy, a cada dirección le llega un mail
 de **AWS Notifications** con el link para confirmar la suscripción. Si queda vacía, no hay
 alertas por mail.
 
@@ -344,14 +350,35 @@ Después, entrar por `website_url`:
    en *Operación* muestra `Origen: archivo`: la API leyó de S3 sólo las páginas de esa cuenta.
    Para exportar no hace falta el modo operación: en *Actividad*, **Exportar movimientos** abre
    la pantalla de exportaciones del usuario. **Pedir exportación** (desde/hasta) la registra y la
-   arma en segundo plano; la lista de *Tus exportaciones* se actualiza sola hasta que queda
+   manda a la cola; la lista de *Tus exportaciones* se actualiza sola hasta que queda
    `Lista` y entonces muestra **Descargar**, que pide una URL prefirmada nueva (vence a los 15
    minutos) y baja directo de S3 un CSV que se abre en Excel o Google Sheets.
 
    **Aviso por mail.** Al crear la cuenta, la API suscribe el email del usuario de Cognito al
    topic `ledger-titulares`. AWS manda un mail *AWS Notification - Subscription Confirmation*:
    hay que confirmarlo, y desde ahí cada exportación lista llega por mail con un link a esa
-   pantalla. Si la sesión no está abierta, el link pasa por el login y vuelve a ella.
+   pantalla, y también la que no se pudo armar después de agotar los reintentos. Si la sesión no
+   está abierta, el link pasa por el login y vuelve a ella.
+
+   **La cola y el exportador.** La API no arma ninguna exportación: la registra, manda su id a
+   `ledger-exports` y responde. El servicio `ledger-exports` de ECS arranca en 0 tareas y sube
+   cuando la cola tiene mensajes, así que **la primera exportación después de un rato sin uso
+   tarda entre 5 y 20 minutos** en quedar lista: SQS publica la métrica de la cola una vez por
+   minuto (y si estuvo inactiva, tarda más en volver a publicarla), después dispara la alarma,
+   ECS pide la tarea y el capacity provider levanta una `t3.small`. Las siguientes, con el
+   exportador ya en marcha, salen en segundos. No hace falta esperar con la pantalla abierta:
+   el mail avisa cuando está lista. Diez minutos después de que la cola queda vacía, el servicio
+   vuelve a 0.
+
+   Para seguirlo: en **ECS → ledger-cluster → ledger-exports** se ve la cantidad de tareas, en
+   **CloudWatch → Alarms** las alarmas `ledger-exports-queue-out` (sube) y
+   `ledger-exports-queue-in` (baja), en **SQS → ledger-exports → Monitoring** los mensajes
+   enviados y borrados, y en `/ecs/ledger-exports` el log de la tarea que armó cada exportación.
+   Subir las tareas a mano no sirve: con la cola vacía, la alarma de bajada las vuelve a 0 al
+   minuto. Tampoco conviene usar *Poll for messages* en la consola: el mensaje que se lleva la
+   consola no lo recibe ningún exportador hasta que vence su visibilidad. Lo que agota los
+   reintentos queda en `ledger-exports-dlq`, con la exportación `fallida`, y su alarma llega a
+   `NOTIFICATION_EMAILS`.
 
 ### 5. Destruir al terminar
 
@@ -426,7 +453,8 @@ las variables y los outputs.
 ### `terraform-aws-modules/vpc/aws` (externo)
 
 VPC `10.0.0.0/16` con 8 subredes en 4 capas × 2 AZ: `public` (NLB y NAT), `app` (API e
-interface endpoints), `archive` (archivador, sin salida a Internet) y `data` (RDS). Crea
+interface endpoints), `archive` (los workers, archivador y exportador, sin salida a Internet) y
+`data` (RDS). Crea
 también el IGW, un NAT, las tablas de ruteo de cada capa y el subnet group de la base. Los CIDR
 y los nombres de las subredes se derivan en [`locals.tf`](terraform/organization/locals.tf).
 
@@ -436,8 +464,8 @@ y los nombres de las subredes se derivan en [`locals.tf`](terraform/organization
   política que sólo deja llegar al bucket del proyecto y al de las capas de ECR.
 - `aws_vpc_endpoint.interface`: un interface endpoint por servicio que necesitan el agente de
   ECS (`ecs`, `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`) y la
-  API para publicar los eventos (`sns`), en las subredes de `app`, que sólo acepta credenciales
-  de la propia cuenta.
+  API y el exportador para publicar en SNS (`sns`) y usar la cola de exportaciones (`sqs`), en las subredes
+  de `app`, que sólo acepta credenciales de la propia cuenta.
 
 **Versión:** `~> 6.7`.
 
@@ -445,10 +473,12 @@ y los nombres de las subredes se derivan en [`locals.tf`](terraform/organization
 
 ### [`modules/security_groups`](terraform/modules/security_groups)
 
-Un security group por capa (`nlb`, `app`, `archive`, `data`), más los de los hosts de ECS
-(`host`) y los interface endpoints (`endpoints`). Las reglas salen de una sola tabla en
-`locals` y referencian grupos o la prefix list de S3, no rangos: sólo el NLB acepta tráfico de
-Internet y sólo la API sale a Internet.
+Un security group por capa (`nlb`, `app`, `archive`, `data`), más los del exportador
+(`exports`), los hosts de ECS (`host`) y los interface endpoints (`endpoints`). Las reglas salen
+de una sola tabla en `locals` y referencian grupos o la prefix list de S3, no rangos: sólo el
+NLB acepta tráfico de Internet y sólo la API sale a Internet. El exportador tiene su propio
+grupo, aunque corre en las subredes del archivador, porque es el único worker que necesita los
+endpoints de SQS y SNS: con un grupo compartido, el archivador también llegaría a ellos.
 
 **Recursos:** `aws_security_group.this`, `aws_vpc_security_group_ingress_rule.this` y
 `aws_vpc_security_group_egress_rule.this`.
@@ -509,14 +539,18 @@ access log JSON por request a su propio log group.
 ### [`modules/events`](terraform/modules/events)
 
 Topic SNS `ledger-events`, donde la API publica cada orden terminada, y una cola SQS con DLQ
-suscripta a él, que lee la Lambda del webhook ([`apps/webhook`](apps/webhook)). Un topic de
-alertas con suscripciones de email recibe la alarma de la DLQ, y el topic `ledger-titulares`
+suscripta a él, que lee la Lambda del webhook ([`apps/webhook`](apps/webhook)). La cola
+`ledger-exports`, con su DLQ, lleva las exportaciones pendientes al exportador. Un
+topic de alertas con suscripciones de email recibe las alarmas de las dos DLQ y la de un
+mensaje de exportación que lleva más de una hora en la cola, y el topic
+`ledger-titulares`
 manda los avisos por mail a cada titular, con una suscripción por titular que filtra por su
 `sub` de Cognito (ver [Eventos y notificaciones](ARCHITECTURE.md#7-eventos-y-notificaciones)).
 
-**Recursos:** `aws_sns_topic.events`, `aws_sns_topic.titulares`, `aws_sns_topic.alerts`, `aws_sqs_queue.webhook` y
-`webhook_dlq`, `aws_lambda_function.this` (webhook), `aws_lambda_event_source_mapping.webhook`,
-`aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
+**Recursos:** `aws_sns_topic.events`, `aws_sns_topic.titulares`, `aws_sns_topic.alerts`,
+`aws_sqs_queue.webhook`, `webhook_dlq`, `exports` y `exports_dlq`, `aws_lambda_function.this`
+(webhook), `aws_lambda_event_source_mapping.webhook`, `aws_cloudwatch_metric_alarm.webhook_dlq`,
+`exports_dlq` y `exports_age`, y las suscripciones.
 
 ---
 
@@ -569,16 +603,19 @@ puede ser necesario lanzar nuevas instancias.
 ### [`modules/service`](terraform/modules/service)
 
 Un servicio de ECS: task definition con red `awsvpc`, el servicio con circuit breaker, el log
-group cifrado y el autoscaling de las tareas, por CPU (la API) o por horario (el archivador).
+group cifrado y el autoscaling de las tareas: por CPU (la API), por horario (el archivador) o
+por la profundidad de una cola SQS (el exportador), con dos alarmas de CloudWatch y una política
+de pasos para cada una (ver [Escalado por cola](ARCHITECTURE.md#escalado-por-cola)).
 La task definition separa las variables comunes de las secretas: éstas son referencias
 (`valueFrom`) a Secrets Manager, y ECS lee el valor al arrancar la tarea (ver
 [Secretos y cifrado](ARCHITECTURE.md#5-secretos-y-cifrado)).
 
 **Recursos:** `aws_ecs_task_definition.this`, `aws_ecs_service.this`,
 `aws_cloudwatch_log_group.this`, `aws_appautoscaling_target.this`,
-`aws_appautoscaling_policy.cpu` y `aws_appautoscaling_scheduled_action.this`.
+`aws_appautoscaling_policy.cpu`, `queue_out` y `queue_in`,
+`aws_cloudwatch_metric_alarm.queue_out` y `queue_in` y `aws_appautoscaling_scheduled_action.this`.
 
-`capacity` y `service` se instancian una vez por servicio (API y archivador) con `for_each`
+`capacity` y `service` se instancian una vez por servicio (API, archivador y exportador) con `for_each`
 sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 
 ---
@@ -593,9 +630,9 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `slice` | `organization/locals.tf` | Toma las dos primeras AZ de la región |
 | `range` | `organization/locals.tf` | Una subred por AZ dentro de cada capa |
 | `substr` | `organization/locals.tf` | Saca la letra de la AZ para el nombre de la subred (`ledger-app-a`) |
-| `floor`, `sum`, `values` | `organization/locals.tf` | Reparte `db_max_connections` entre las tareas: el tope de cada una va en la `DB_URL` (`pool_max_conns`) |
+| `ceil`, `sum`, `values` | `organization/locals.tf` | Suma las conexiones de todos los servicios en el pico de un deploy, para compararlas con `db_max_connections`; el pool de cada tarea va en su `DB_URL` (`pool_max_conns`) |
 | `coalesce` | `organization/locals.tf` | Usa la clave o la URL que se pasó por variable y, si está vacía, la generada o la propia |
-| `tostring` | `organization/locals.tf` | El puerto de la API y las filas por parte y por bloque del archivador como variables de entorno, que en la task definition son strings |
+| `tostring` | `organization/locals.tf` | El puerto de la API, las filas por parte y por bloque del archivador y los consumidores del exportador como variables de entorno, que en la task definition son strings |
 | `concat` | `organization/network.tf` | Asocia el endpoint de S3 a las tablas de app y archivado |
 | `replace` | `organization/network.tf`, `modules/security_groups/main.tf`, `modules/database/main.tf`, `modules/analytics/main.tf` | Arma nombres: el `Name` de cada endpoint y de cada regla (`app_in_nlb` → `ledger-app-in-nlb`), y el de la base de RDS y la de Glue sin guiones |
 | `try` | `modules/security_groups/main.tf` | Usa el SG de destino sólo si el `peer` de la regla es otro grupo |
@@ -612,6 +649,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `format`, `contains` | `modules/capacity/main.tf` | Elige el parámetro de SSM de la AMI arm64 si el tipo de instancia admite esa arquitectura |
 | `base64encode` | `modules/capacity/main.tf` | El `user_data` va codificado en el launch template |
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
+| `join`, `keys` | `modules/service/main.tf` | Arma la suma de las métricas de la cola en la alarma que baja el exportador |
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
 | `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
 | `can`, `regex`, `endswith` | `modules/analytics/variables.tf` | Valida que `history_start` sea un mes `AAAA-MM` y que los prefijos terminen en `/` |
@@ -620,7 +658,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
-| `for_each` | `organization/main.tf` (`module "capacity"`, `module "service"`) | Instancias y servicio de ECS para la API y el archivador sin duplicar código |
+| `for_each` | `organization/main.tf` (`module "capacity"`, `module "service"`) | Instancias y servicio de ECS para la API, el archivador y el exportador sin duplicar código |
 | `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesitan el agente de ECS y la API |
 | `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) y un secreto de Secrets Manager por servicio |
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
@@ -630,7 +668,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `for_each` | `modules/analytics/main.tf` | Una consulta guardada de Athena por entrada de `local.queries` |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
-| `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
+| `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API), y las de cola con sus alarmas sólo con `queue_scaling` (el exportador) |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
 | `depends_on` | `modules/events/main.tf` | La suscripción de SNS a la cola se crea después de la política que deja escribir a SNS |
@@ -638,6 +676,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
+| `lifecycle` | `organization/secrets.tf` | `precondition`: el plan falla si los pools de todas las tareas, en el pico de un deploy, superan `db_max_connections` |
 
 ### Validación de variables
 
@@ -646,9 +685,12 @@ tarea, `log_retention_days` a los valores que admite CloudWatch, `target_capacit
 1 a 100, que el bloque de un Parquet del archivo no tenga más filas que la parte
 (`archive_rows_per_row_group` ≤ `archive_rows_per_part`, una validación que cruza dos variables)
 y, en Athena, el formato de `history_start`, los prefijos y el tope de bytes escaneados (Athena
-no acepta menos de 10 MiB). Están en `organization/variables.tf`,
-`modules/auth/variables.tf`, `modules/service/variables.tf`, `modules/capacity/variables.tf` y
-`modules/analytics/variables.tf`, y un valor inválido falla en el `plan`, no a mitad del apply.
+no acepta menos de 10 MiB). También que el escalado por cola tenga pasos y minutos de al menos 1
+y que la antigüedad que dispara la alarma de la cola de exportaciones sea de al menos un minuto.
+Están en `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf`,
+`modules/capacity/variables.tf`, `modules/events/variables.tf` y `modules/analytics/variables.tf`,
+y un valor inválido falla en el `plan`, no a mitad del apply. Lo que no es una variable, como la
+suma de los pools de conexiones, lo comprueba una `precondition`.
 
 ### Bloques `dynamic`
 
@@ -656,7 +698,8 @@ no acepta menos de 10 MiB). Están en `organization/variables.tf`,
 |---|---|
 | `modules/storage/main.tf` | Una regla de lifecycle por prefijo, con sus transiciones, y otra por cada prefijo que expira (`athena-results/`) |
 | `modules/analytics/main.tf` | Las columnas de la tabla de Glue, desde una lista en `locals` |
-| `modules/service/main.tf` | El bloque `load_balancer` del servicio sólo si tiene target group (la API sí, el archivador no) |
+| `modules/service/main.tf` | El bloque `load_balancer` del servicio sólo si tiene target group (la API sí, los workers no) |
+| `modules/service/main.tf` | Una métrica de la cola (visibles, en curso y demorados) por `metric_query` en la alarma que baja el exportador |
 
 ### Data sources
 
@@ -696,7 +739,7 @@ no acepta menos de 10 MiB). Están en `organization/variables.tf`,
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/
-    ├── ledger/            # backend en Go: binarios api y archivador, imagen con su Dockerfile
+    ├── ledger/            # backend en Go: binarios api, archivador y exportador, imagen con su Dockerfile
     ├── web/               # frontend estático (lo sube modules/website)
     ├── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
     └── webhook/           # Lambda que entrega los avisos del webhook desde la cola SQS

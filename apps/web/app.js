@@ -108,12 +108,13 @@ formAlta.addEventListener('submit', async (ev) => {
   boton.textContent = 'Creando tu cuenta…';
   try {
     // El saldo inicial lo decide la API: el cliente no lo elige.
-    const r = await pedir('POST', '/cuentas', { cuerpo: { alias, tipo: 'usuario' } });
+    // Con el ID token, la API suscribe el email del titular a sus avisos por mail.
+    const r = await pedir('POST', '/cuentas', { cuerpo: { alias, tipo: 'usuario' }, conIdToken: true });
     if (r.codigo === 401 || r.codigo === 0) return;
     if (r.codigo === 409 && r.datos?.codigo === 'alias_en_uso') throw new Error(`El alias @${alias} ya está en uso: probá con otro`);
     if (!r.ok && r.datos?.codigo !== 'ya_tiene_cuenta') throw new Error(mensajeDeError(r));
     usuario.olvidarAgenda();
-    if (r.ok) avisar(`¡Listo! Tu cuenta @${r.datos.alias} está creada`);
+    if (r.ok) avisar(`¡Listo! Tu cuenta @${r.datos.alias} está creada. Confirmá el mail de AWS para recibir avisos`);
     await arrancar();
   } catch (err) {
     mostrar(errorAlta, err.message);
@@ -270,8 +271,8 @@ function ir(hash) {
 }
 
 function marcarActiva(hash) {
-  // El detalle de una operación se ve desde Actividad: la marca queda ahí.
-  const activa = hash === '#/operacion' ? '#/actividad' : hash;
+  // El detalle de una operación y las exportaciones se ven desde Actividad: la marca queda ahí.
+  const activa = hash === '#/operacion' || hash === '#/exportaciones' ? '#/actividad' : hash;
   for (const b of document.querySelectorAll('[data-hash]')) {
     if (b.dataset.hash === activa) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
@@ -293,6 +294,10 @@ async function pintar() {
   try {
     if (partes[0] === 'operacion') {
       await usuario.operacion(lienzo, ir, partes[1], partes[2]);
+      return;
+    }
+    if (partes[0] === 'exportaciones') {
+      await usuario.exportaciones(lienzo, ir);
       return;
     }
     if (partes[0] === 'enviar' && partes[1]) {

@@ -5,6 +5,8 @@ Eventos del ledger. La API publica cada orden terminada en el topic `events`, qu
 - **Webhook:** SNS → SQS (+DLQ) → Lambda, que firma el aviso con HMAC y hace el POST. Los
   reintentos son de SQS; lo que los agota queda en la DLQ y dispara una alarma.
 - **Alertas:** topic aparte, con suscripciones de email para operación.
+- **Titulares:** topic `titulares`, con una suscripción de email por titular. Lo usa la API para
+  avisarle a cada uno lo suyo (hoy, que su exportación está lista).
 
 ## Contrato del evento
 
@@ -30,6 +32,13 @@ La API publica en `SNS_TOPIC_ARN` un mensaje por orden que llega a un estado ter
 
 `evento_id` es `<orden_id>:<estado>`: el mismo evento tiene siempre el mismo id, así que el
 receptor del webhook puede descartar los duplicados.
+
+## Contrato de los avisos a titulares
+
+La API suscribe el email de cada titular a `TITULARES_TOPIC_ARN` con el *filter policy*
+`{"titular": ["<sub de Cognito>"]}`, y publica cada aviso con el atributo `titular` (`String`)
+igual a ese `sub`: SNS se lo entrega sólo a esa suscripción. El cuerpo es texto plano, porque
+llega como mail. SNS admite 200 *filter policies* por topic.
 
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
@@ -63,6 +72,7 @@ No modules.
 | [aws_secretsmanager_secret_version.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
 | [aws_sns_topic.alerts](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic) | resource |
 | [aws_sns_topic.events](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic) | resource |
+| [aws_sns_topic.titulares](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic) | resource |
 | [aws_sns_topic_subscription.alerts](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic_subscription) | resource |
 | [aws_sns_topic_subscription.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic_subscription) | resource |
 | [aws_sqs_queue.webhook](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue) | resource |
@@ -91,6 +101,7 @@ No modules.
 | Name | Description |
 |------|-------------|
 | <a name="output_alerts_topic_arn"></a> [alerts\_topic\_arn](#output\_alerts\_topic\_arn) | Topic de alertas de operación: la alarma de la DLQ del webhook. |
+| <a name="output_titulares_topic_arn"></a> [titulares\_topic\_arn](#output\_titulares\_topic\_arn) | Topic de los avisos por mail a cada titular (TITULARES\_TOPIC\_ARN): cada suscripción filtra por su titular. |
 | <a name="output_topic_arn"></a> [topic\_arn](#output\_topic\_arn) | Topic donde la API publica cada orden terminada (SNS\_TOPIC\_ARN). |
 | <a name="output_webhook_dlq_url"></a> [webhook\_dlq\_url](#output\_webhook\_dlq\_url) | DLQ del webhook: los avisos que agotaron los reintentos. |
 | <a name="output_webhook_queue_url"></a> [webhook\_queue\_url](#output\_webhook\_queue\_url) | Cola de entrega del webhook. |

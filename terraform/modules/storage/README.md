@@ -1,8 +1,11 @@
 # storage
 
-Bucket S3 del proyecto: guarda los meses archivados del ledger (`transaction-history/`) y las
-exportaciones (`exports/`). Se accede por el gateway endpoint, sin pasar por el NAT. Se cifra con la clave KMS del proyecto (SSE-KMS) y su
-política rechaza los pedidos que no usan HTTPS.
+Bucket S3 del proyecto: guarda los meses archivados del ledger (`transaction-history/`, en
+Parquet), las exportaciones (`exports/`) y los resultados de Athena (`athena-results/`); los dos
+últimos expiran por `expirations`. Se accede por el gateway endpoint, sin pasar por el NAT. Se
+cifra con la clave KMS del proyecto (SSE-KMS) y su política rechaza los pedidos que no usan
+HTTPS. El archivador y las exportaciones suben por multipart, así que el lifecycle aborta las
+subidas que quedan sin terminar (`incomplete_multipart_days`).
 
 El bucket no lo crea el módulo sino [`scripts/buckets.sh`](../../../scripts/buckets.sh), antes del
 apply: el SCP de AWS Academy niega `s3:GetBucketObjectLockConfiguration`, que `aws_s3_bucket`
@@ -42,10 +45,12 @@ No modules.
 
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
+| <a name="input_expirations"></a> [expirations](#input\_expirations) | Prefijos cuyos objetos expiran después de unos días (por ejemplo, los resultados de Athena). Con el versionado, expirar los deja como versión anterior, que se borra a los noncurrent\_version\_days. | <pre>map(object({<br/>    prefix = string<br/>    days   = number<br/>  }))</pre> | `{}` | no |
+| <a name="input_incomplete_multipart_days"></a> [incomplete\_multipart\_days](#input\_incomplete\_multipart\_days) | Días después de los que se abortan las subidas multipart sin terminar, para no pagar las partes que quedaron subidas. | `number` | `1` | no |
 | <a name="input_kms_key_arn"></a> [kms\_key\_arn](#input\_kms\_key\_arn) | Clave KMS con la que se cifran los objetos (SSE-KMS). Quien lee o escribe necesita permiso sobre ella. | `string` | n/a | yes |
 | <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | Prefijo del nombre del bucket. | `string` | n/a | yes |
 | <a name="input_noncurrent_version_days"></a> [noncurrent\_version\_days](#input\_noncurrent\_version\_days) | Dias que se conserva una versión remplazada o borrada antes de eliminarla. | `number` | `30` | no |
-| <a name="input_transitions"></a> [transitions](#input\_transitions) | Transiciones de clases de almacenamiento. | <pre>map(object({<br/>    prefix = string<br/>    transitions = list(object({<br/>      days          = number<br/>      storage_class = string<br/>    }))<br/>  }))</pre> | <pre>{<br/>  "transaction-history": {<br/>    "prefix": "transaction-history/",<br/>    "transitions": [<br/>      {<br/>        "days": 30,<br/>        "storage_class": "STANDARD_IA"<br/>      },<br/>      {<br/>        "days": 365,<br/>        "storage_class": "GLACIER"<br/>      }<br/>    ]<br/>  }<br/>}</pre> | no |
+| <a name="input_transitions"></a> [transitions](#input\_transitions) | Transiciones de clases de almacenamiento. | <pre>map(object({<br/>    prefix = string<br/>    transitions = list(object({<br/>      days          = number<br/>      storage_class = string<br/>    }))<br/>  }))</pre> | <pre>{<br/>  "transaction-history": {<br/>    "prefix": "transaction-history/",<br/>    "transitions": [<br/>      {<br/>        "days": 30,<br/>        "storage_class": "STANDARD_IA"<br/>      },<br/>      {<br/>        "days": 365,<br/>        "storage_class": "GLACIER_IR"<br/>      }<br/>    ]<br/>  }<br/>}</pre> | no |
 
 ## Outputs
 

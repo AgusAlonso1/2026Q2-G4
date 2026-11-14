@@ -533,6 +533,9 @@ code { font-family: var(--mono); font-size: .9em; background: var(--superficie-2
   cursor: pointer;
 }
 .fila:hover { background: var(--superficie-2); }
+.fila-fija { cursor: default; }
+.fila-fija:hover { background: none; }
+.fila-fija .fila-titulo { white-space: normal; }
 .fila-icono {
   width: 42px; height: 42px; border-radius: 13px;
   display: grid; place-items: center;

@@ -1,7 +1,7 @@
 import { pedir, exigir, estado, claveDeIntento, mensajeDeError } from './api.js';
 import {
   el, enPesos, conSigno, aCentavos, cuando, fechaCompleta, desenlace, periodoActual,
-  nombreDelPeriodo, avatar, etiquetaDia, botonCopiar, esqueleto, vacio, hora,
+  nombreDelPeriodo, avatar, etiquetaDia, botonCopiar, esqueleto, vacio, hora, avisar,
 } from './formato.js';
 import { icono } from './iconos.js';
 
@@ -173,7 +173,9 @@ export async function actividad(hoja, ir) {
       el('div', { clase: 'cabecera-tarjeta' },
         el('div', { clase: 'mes-nav' }, anterior, nombreMes, siguiente),
         el('div', { clase: 'segmentado', role: 'group', 'aria-label': 'Filtrar' }, ...botonesFiltro)),
-      totales, origen, lista));
+      totales, origen, lista),
+    el('div', { clase: 'fila-botones' },
+      el('button', { clase: 'boton', onclick: () => ir('#/exportaciones') }, icono('bajar', 18), 'Exportar movimientos')));
 
   const pintarLista = () => {
     const movs = consolidar(extracto?.movimientos).filter((m) =>
@@ -284,6 +286,117 @@ function subtituloMovimiento(m, tipo, entra) {
   if (tipo === 'egreso') return entra ? 'Devolución' : 'Retiro';
   if (tipo === 'ingreso') return 'Ingreso';
   return entra ? 'Recibiste' : 'Enviaste';
+}
+
+// ---------------------------------------------------------------- Exportaciones
+
+const ESTADO_EXPORTACION = {
+  pendiente: { texto: 'Preparando', tono: 'espera', icono: 'reloj' },
+  lista: { texto: 'Lista', tono: 'ok', icono: 'ok' },
+  fallida: { texto: 'No se pudo armar', tono: 'no', icono: 'cruz' },
+};
+
+// El archivo se arma en segundo plano: mientras haya alguna pendiente, la lista se vuelve a pedir
+// sola, y además llega un mail cuando queda lista.
+export async function exportaciones(hoja, ir) {
+  const actual = periodoActual();
+  const desde = el('input', { type: 'month', value: actual, max: actual, required: true });
+  const hasta = el('input', { type: 'month', value: actual, max: actual, required: true });
+  const problema = el('p', { clase: 'error', hidden: true, role: 'alert' });
+  const exportar = el('button', { clase: 'boton boton-primario', type: 'submit' }, icono('bajar', 18), 'Pedir exportación');
+  const lista = el('div', { clase: 'lista' }, esqueleto(3));
+
+  const form = el('form', { novalidate: true, style: 'display:grid;gap:1rem' },
+    el('div', { clase: 'rejilla' },
+      el('label', { clase: 'campo' }, el('span', { clase: 'campo-rotulo', texto: 'Desde' }), desde),
+      el('label', { clase: 'campo' }, el('span', { clase: 'campo-rotulo', texto: 'Hasta' }), hasta)),
+    el('p', { clase: 'campo-ayuda', texto: 'Hasta 24 meses por pedido. Los meses ya cerrados también se incluyen.' }),
+    problema,
+    el('div', { clase: 'fila-botones' }, exportar));
+
+  hoja.append(
+    encabezado('Exportaciones', 'Tus movimientos de uno o varios meses en un archivo. Lo armamos en segundo plano y te avisamos por mail cuando está listo.',
+      () => ir('#/actividad')),
+    el('section', { clase: 'tarjeta' },
+      el('div', { clase: 'cabecera-tarjeta' }, el('h2', { texto: 'Pedir una exportación' })), form),
+    el('section', { clase: 'tarjeta' },
+      el('div', { clase: 'cabecera-tarjeta' }, el('h2', { texto: 'Tus exportaciones' })), lista));
+
+  let espera = 0;
+  const fallo = (err) => lista.replaceChildren(el('p', { clase: 'error', texto: err.message }));
+  const cargar = async () => {
+    clearTimeout(espera);
+    const { exportaciones: pedidas } = await exigir('GET', '/exportaciones?limite=20');
+    if (!lista.isConnected) return;
+    pintarExportaciones(lista, pedidas);
+    if (pedidas.some((x) => x.estado === 'pendiente')) espera = setTimeout(() => cargar().catch(fallo), 3000);
+  };
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    problema.hidden = true;
+    if (!desde.value || !hasta.value || hasta.value < desde.value) {
+      problema.textContent = 'Elegí un rango válido: "Hasta" no puede ser anterior a "Desde"';
+      problema.hidden = false;
+      return;
+    }
+    exportar.disabled = true;
+    try {
+      const r = await pedir('POST', '/exportaciones', { cuerpo: { desde: desde.value, hasta: hasta.value } });
+      if (r.codigo === 0 && r.datos?.codigo === 'sesion_vencida') return;
+      if (!r.ok) throw new Error(mensajeDeError(r));
+      avisar('Estamos armando tu archivo: te avisamos por mail cuando esté listo');
+      await cargar();
+    } catch (err) {
+      problema.textContent = err.message;
+      problema.hidden = false;
+    } finally {
+      exportar.disabled = false;
+    }
+  });
+
+  await cargar();
+}
+
+function pintarExportaciones(lista, pedidas) {
+  if (!pedidas.length) {
+    lista.replaceChildren(vacio('bajar', 'Todavía no pediste exportaciones', 'Cuando pidas una, la vas a ver acá con su estado.'));
+    return;
+  }
+  lista.replaceChildren(...pedidas.map(filaExportacion));
+}
+
+function filaExportacion(x) {
+  const e = ESTADO_EXPORTACION[x.estado] || { texto: x.estado, tono: 'espera', icono: 'reloj' };
+  const rango = x.desde === x.hasta ? nombreDelPeriodo(x.desde) : `${nombreDelPeriodo(x.desde)} a ${nombreDelPeriodo(x.hasta)}`;
+  const detalle = [`N.º ${x.id}`, `pedida ${cuando(x.solicitada_en)}`];
+  if (x.estado === 'lista') detalle.push(`${x.filas ?? 0} movimientos`);
+  if (x.estado === 'fallida') detalle.push('pedila de nuevo');
+
+  // La URL prefirmada vence en minutos: se pide una nueva en cada descarga.
+  const descargar = el('button', { clase: 'boton boton-chico' }, icono('bajar', 16), 'Descargar');
+  descargar.addEventListener('click', async () => {
+    descargar.disabled = true;
+    try {
+      const r = await pedir('GET', `/exportaciones/${x.id}/descarga`);
+      if (r.codigo === 410) throw new Error('El archivo ya venció: pedí la exportación de nuevo');
+      if (!r.ok) throw new Error(mensajeDeError(r));
+      window.location.assign(r.datos.url);
+    } catch (err) {
+      avisar(err.message, true);
+    } finally {
+      descargar.disabled = false;
+    }
+  });
+
+  return el('div', { clase: 'fila fila-fija' },
+    el('span', { clase: 'fila-icono banco' }, icono('calendario', 20)),
+    el('span', { clase: 'fila-texto' },
+      el('div', { clase: 'fila-titulo', texto: rango }),
+      el('div', { clase: 'fila-sub', texto: detalle.join(' · ') })),
+    x.estado === 'lista'
+      ? descargar
+      : el('span', { clase: `pildora pildora-${e.tono}` }, icono(e.icono, 14), e.texto));
 }
 
 // ---------------------------------------------------------------- Enviar

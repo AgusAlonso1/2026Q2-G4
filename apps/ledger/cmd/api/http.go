@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ledger/internal/apierr"
+	"ledger/internal/avisos"
 	"ledger/internal/cors"
 	"ledger/internal/docs"
 	"ledger/internal/ledger"
@@ -31,6 +32,8 @@ type API struct {
 	sesiones *sesion.Validador
 
 	avisos *webhook.Receptor
+
+	titulares *avisos.Avisador
 
 	adminClave string
 
@@ -83,7 +86,9 @@ func registrar(a *API) http.Handler {
 	mux.HandleFunc("GET /cuentas/{id}/movimientos", a.conSesion(a.movimientos))
 
 	mux.HandleFunc("POST /exportaciones", a.conSesion(a.exportar))
+	mux.HandleFunc("GET /exportaciones", a.conSesion(a.listarExportaciones))
 	mux.HandleFunc("GET /exportaciones/{id}", a.conSesion(a.verExportacion))
+	mux.HandleFunc("GET /exportaciones/{id}/descarga", a.conSesion(a.descargarExportacion))
 
 	mux.HandleFunc("POST /transferencias", a.conSesion(a.transferir))
 	mux.HandleFunc("GET /transferencias/{id}", a.conSesion(a.verTransferencia))
@@ -181,7 +186,27 @@ func (a *API) crearCuenta(w http.ResponseWriter, r *http.Request) {
 		apierr.EscribirError(w, err)
 		return
 	}
+	if e.Titular != "" {
+		a.suscribirTitular(r, e.Titular)
+	}
 	apierr.Escribir(w, http.StatusCreated, conEnlacesAlta(c))
+}
+
+func (a *API) suscribirTitular(r *http.Request, titular string) {
+	token := r.Header.Get(cabeceraIDToken)
+	if !a.titulares.Habilitado() || token == "" {
+		return
+	}
+	id, err := a.sesiones.ValidarID(r.Context(), token)
+	if err != nil || id.Sub != titular {
+		slog.Warn("no se suscribe al titular: el id token no es valido o es de otro usuario", "error", err)
+		return
+	}
+	if _, err := a.titulares.Suscribir(r.Context(), titular, id.Email); err != nil {
+		slog.Error("suscribir al titular a los avisos", "error", err)
+		return
+	}
+	slog.Info("titular suscripto a los avisos: tiene que confirmar el mail")
 }
 
 func (a *API) saldo(w http.ResponseWriter, r *http.Request) {
@@ -555,7 +580,27 @@ func (a *API) exportar(w http.ResponseWriter, r *http.Request) {
 		apierr.EscribirError(w, err)
 		return
 	}
-	apierr.Escribir(w, http.StatusCreated, conEnlacesExportacion(res))
+	apierr.Escribir(w, http.StatusAccepted, conEnlacesExportacion(res))
+}
+
+func (a *API) listarExportaciones(w http.ResponseWriter, r *http.Request) {
+	limite, _ := strconv.Atoi(r.URL.Query().Get("limite"))
+	var cuenta *int64
+	if mia := titular(r); mia != 0 {
+		cuenta = &mia
+	} else if id, _ := strconv.ParseInt(r.URL.Query().Get("cuenta_id"), 10, 64); id != 0 {
+		cuenta = &id
+	}
+	lista, err := a.svc.ListarExportaciones(r.Context(), cuenta, limite)
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	vista := make([]exportacionConEnlaces, len(lista))
+	for i, e := range lista {
+		vista[i] = conEnlacesExportacion(e)
+	}
+	apierr.Escribir(w, http.StatusOK, map[string]any{"exportaciones": vista})
 }
 
 func (a *API) verExportacion(w http.ResponseWriter, r *http.Request) {
@@ -568,12 +613,40 @@ func (a *API) verExportacion(w http.ResponseWriter, r *http.Request) {
 		apierr.EscribirError(w, err)
 		return
 	}
-	if mia := titular(r); mia != 0 && (res.CuentaID == nil || *res.CuentaID != mia) {
-		apierr.EscribirError(w, apierr.New(http.StatusForbidden, "exportacion_ajena",
-			"la exportacion %d no es de la cuenta %d", res.ID, mia))
+	if !a.exportacionPropia(w, r, res) {
 		return
 	}
 	apierr.Escribir(w, http.StatusOK, conEnlacesExportacion(res))
+}
+
+func (a *API) exportacionPropia(w http.ResponseWriter, r *http.Request, e *ledger.Exportacion) bool {
+	if mia := titular(r); mia != 0 && (e.CuentaID == nil || *e.CuentaID != mia) {
+		apierr.EscribirError(w, apierr.New(http.StatusForbidden, "exportacion_ajena",
+			"la exportacion %d no es de la cuenta %d", e.ID, mia))
+		return false
+	}
+	return true
+}
+
+func (a *API) descargarExportacion(w http.ResponseWriter, r *http.Request) {
+	id, ok := idDeRuta(w, r)
+	if !ok {
+		return
+	}
+	e, err := a.svc.VerExportacion(r.Context(), id)
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	if !a.exportacionPropia(w, r, e) {
+		return
+	}
+	d, err := a.svc.DescargarExportacion(r.Context(), e)
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	apierr.Escribir(w, http.StatusOK, d)
 }
 
 func (a *API) recibirAviso(w http.ResponseWriter, r *http.Request) {

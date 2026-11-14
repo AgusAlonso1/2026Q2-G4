@@ -1,6 +1,7 @@
 import { aleatorio } from './api.js';
 
 const LLAVE_STATE = 'nucleo.state';
+const LLAVE_DESTINO = 'nucleo.destino';
 
 const ERRORES = {
   access_denied: 'Se canceló el inicio de sesión',
@@ -34,9 +35,24 @@ function tomarState() {
   } catch { return ''; }
 }
 
+// Quien llega por un link a una pantalla (el del mail de una exportación) vuelve a ella después
+// del login, que pasa por Cognito y pierde el fragmento.
+function guardarDestino() {
+  if (!location.hash.startsWith('#/')) return;
+  try { sessionStorage.setItem(LLAVE_DESTINO, location.hash); } catch { /* sin persistencia */ }
+}
+function tomarDestino() {
+  try {
+    const valor = sessionStorage.getItem(LLAVE_DESTINO);
+    sessionStorage.removeItem(LLAVE_DESTINO);
+    return valor || '';
+  } catch { return ''; }
+}
+
 export function irAlLogin(config) {
   const state = aleatorio(24);
   guardarState(state);
+  guardarDestino();
   location.assign(`${config.login_url}&state=${encodeURIComponent(state)}`);
 }
 
@@ -49,7 +65,7 @@ export function leerVuelta() {
   const fragmento = new URLSearchParams(location.hash.slice(1));
   if (!fragmento.has('state') || !(fragmento.has('access_token') || fragmento.has('error'))) return null;
 
-  history.replaceState(null, '', location.pathname + location.search);
+  history.replaceState(null, '', location.pathname + location.search + tomarDestino());
 
   const esperado = tomarState();
   if (!esperado || fragmento.get('state') !== esperado) {

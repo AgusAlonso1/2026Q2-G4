@@ -1,3 +1,6 @@
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 locals {
   managed_rules = {
     ip-reputation = { priority = 1, name = "AWSManagedRulesAmazonIpReputationList" }
@@ -82,9 +85,29 @@ resource "aws_cloudwatch_log_group" "this" {
   kms_key_id        = var.kms_key_arn
 }
 
+resource "aws_cloudwatch_log_resource_policy" "this" {
+  policy_name = "${var.name_prefix}-waf-logs"
+
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "delivery.logs.amazonaws.com" }
+      Action    = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource  = "${aws_cloudwatch_log_group.this.arn}:*"
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+        ArnLike      = { "aws:SourceArn" = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:*" }
+      }
+    }]
+  })
+}
+
 resource "aws_wafv2_web_acl_logging_configuration" "this" {
   resource_arn            = aws_wafv2_web_acl.this.arn
   log_destination_configs = [aws_cloudwatch_log_group.this.arn]
+
+  depends_on = [aws_cloudwatch_log_resource_policy.this]
 
   redacted_fields {
     single_header {

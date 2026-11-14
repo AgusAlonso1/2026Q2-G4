@@ -100,3 +100,12 @@ output "monitoring" {
     log_queries      = module.monitoring.query_names
   }
 }
+
+output "audit" {
+  description = "Auditoría y costos: bucket de logs y trail de CloudTrail, y el presupuesto mensual (null sin NOTIFICATION_EMAILS)."
+  value = {
+    logs_bucket = module.audit.bucket_name
+    trail_arn   = module.audit.trail_arn
+    budget      = module.audit.budget_name
+  }
+}

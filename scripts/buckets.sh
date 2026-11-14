@@ -9,8 +9,9 @@ suffix="$account-$region-an"
 state="$name-tfstate-$suffix"
 # Los buckets del proyecto se crean acá y no con aws_s3_bucket: el SCP de AWS Academy niega
 # s3:GetBucketObjectLockConfiguration, y el provider lo lee cada vez que refresca un bucket.
-# Son los nombres que arman modules/storage y modules/website.
-project=("$name-$suffix" "$name-web-$suffix")
+# Son los nombres que arman modules/storage, modules/website y modules/audit.
+# El de logs lo configura modules/audit: ahí escribe CloudTrail.
+project=("$name-$suffix" "$name-web-$suffix" "$name-logs-$suffix")
 
 exists() {
   aws s3api head-bucket --bucket "$1" >/dev/null 2>&1

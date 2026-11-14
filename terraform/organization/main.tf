@@ -184,3 +184,12 @@ module "monitoring" {
   db_instance_identifier  = module.database.identifier
   waf_web_acl_name        = module.waf.web_acl_name
 }
+
+module "audit" {
+  source = "../modules/audit"
+
+  name_prefix      = local.name_prefix
+  kms_key_arn      = aws_kms_key.this.arn
+  budget_limit_usd = var.budget_limit_usd
+  budget_emails    = local.notification_emails
+}

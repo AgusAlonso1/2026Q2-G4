@@ -168,16 +168,13 @@ module "monitoring" {
   archive_log_group_name = module.service["archive"].log_group_name
   exports_log_group_name = module.service["exports"].log_group_name
 
-  # El módulo events expone las URL de las colas; el nombre es el último tramo.
-  webhook_queue_name = regex("[^/]+$", module.events.webhook_queue_url)
-  webhook_dlq_name   = regex("[^/]+$", module.events.webhook_dlq_url)
-  exports_queue_name = module.events.exports_queue_name
-  exports_dlq_name   = regex("[^/]+$", module.events.exports_dlq_url)
-  external_alarm_names = [
-    for sufijo in ["webhook-dlq", "exports-age", "exports-dlq", "exports-dlq-sent"] : "${local.name_prefix}-${sufijo}"
-  ]
-  webhook_function_name  = "${local.name_prefix}-webhook"
-  webhook_log_group_name = "/aws/lambda/${local.name_prefix}-webhook"
+  webhook_queue_name     = module.events.queue_names.webhook
+  webhook_dlq_name       = module.events.queue_names.webhook_dlq
+  exports_queue_name     = module.events.queue_names.exports
+  exports_dlq_name       = module.events.queue_names.exports_dlq
+  external_alarm_names   = module.events.alarm_names
+  webhook_function_name  = module.events.webhook_function_name
+  webhook_log_group_name = module.events.webhook_log_group_name
 
   nlb_arn_suffix          = module.load_balancer.arn_suffix
   target_group_arn_suffix = module.load_balancer.target_group_arn_suffix

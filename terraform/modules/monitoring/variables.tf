@@ -60,7 +60,7 @@ variable "api_log_group_name" {
 }
 
 variable "archive_log_group_name" {
-  description = "Log group del archivador, para su consulta guardada."
+  description = "Log group del archivador, para la consulta de errores de los binarios."
   type        = string
 }
 

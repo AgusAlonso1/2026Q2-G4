@@ -606,7 +606,8 @@ sumar una suscripción, sin tocar la API.
 
 ### Observabilidad
 
-La alarma de la DLQ cubre el lado asíncrono. El síncrono, la API y lo que tiene detrás, lo cubre
+Las alarmas de las colas (las DLQ del webhook y de las exportaciones, y la de una exportación
+demorada) cubren el lado asíncrono. El síncrono, la API y lo que tiene detrás, lo cubre
 [`modules/monitoring`](terraform/modules/monitoring), con los tres tipos de dato:
 
 - **Métricas.** Las que publican solos ECS (Container Insights), el NLB, RDS, SQS, Lambda y el

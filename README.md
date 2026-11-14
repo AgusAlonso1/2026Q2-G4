@@ -700,7 +700,6 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
 | `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
 | `can`, `regex`, `endswith` | `modules/analytics/variables.tf` | Valida que `history_start` sea un mes `AAAA-MM` y que los prefijos terminen en `/` |
-| `regex` | `organization/main.tf` (`module "monitoring"`) | El nombre de cada cola de SQS, el último tramo de su URL |
 | `jsonencode`, `concat` | `modules/monitoring/main.tf` | El cuerpo del dashboard, armando cada panel desde una lista en `locals` |
 
 ### Meta-argumentos utilizados
@@ -759,8 +758,8 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 | Data source | Dónde | Para qué |
 |---|---|---|
 | `aws_availability_zones` | `organization/providers.tf` | Las AZ disponibles de la región |
-| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth`, `modules/monitoring` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
-| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service`, `modules/monitoring` | La región, sin pasarla como variable a cada módulo |
+| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth`, `modules/monitoring`, `modules/audit` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
+| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service`, `modules/monitoring`, `modules/audit` | La región, sin pasarla como variable a cada módulo |
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
 | `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
 | `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |

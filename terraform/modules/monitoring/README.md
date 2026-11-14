@@ -54,7 +54,7 @@ No modules.
 | <a name="input_api_log_group_name"></a> [api\_log\_group\_name](#input\_api\_log\_group\_name) | Log group de la API. Cada request deja una línea JSON con msg = "request", ruta, estado y ms. | `string` | n/a | yes |
 | <a name="input_api_min_tasks"></a> [api\_min\_tasks](#input\_api\_min\_tasks) | Mínimo de tareas de la API. Con menos targets sanos en el NLB, la alarma se dispara. | `number` | n/a | yes |
 | <a name="input_api_service_name"></a> [api\_service\_name](#input\_api\_service\_name) | Servicio de ECS de la API. | `string` | n/a | yes |
-| <a name="input_archive_log_group_name"></a> [archive\_log\_group\_name](#input\_archive\_log\_group\_name) | Log group del archivador, para su consulta guardada. | `string` | n/a | yes |
+| <a name="input_archive_log_group_name"></a> [archive\_log\_group\_name](#input\_archive\_log\_group\_name) | Log group del archivador, para la consulta de errores de los binarios. | `string` | n/a | yes |
 | <a name="input_archive_service_name"></a> [archive\_service\_name](#input\_archive\_service\_name) | Servicio de ECS del archivador. | `string` | n/a | yes |
 | <a name="input_cluster_name"></a> [cluster\_name](#input\_cluster\_name) | Cluster de ECS. Container Insights publica sus métricas con esta dimensión. | `string` | n/a | yes |
 | <a name="input_db_connections_threshold"></a> [db\_connections\_threshold](#input\_db\_connections\_threshold) | Conexiones abiertas a RDS. El diseño reparte db\_max\_connections (60) y una db.t3.micro acepta unas 80: pasar este valor quiere decir que algo se salió del cálculo. | `number` | `70` | no |

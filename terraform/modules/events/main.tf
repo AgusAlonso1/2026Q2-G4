@@ -12,6 +12,9 @@ locals {
       }
     }
   }
+
+  exports_redrive_margin    = 5
+  exports_max_receive_count = var.exports_max_attempts + local.exports_redrive_margin
 }
 
 resource "aws_sns_topic" "events" {
@@ -115,6 +118,23 @@ resource "aws_lambda_function" "this" {
   depends_on = [aws_cloudwatch_log_group.this]
 }
 
+resource "aws_sqs_queue" "exports_dlq" {
+  name                      = "${var.name_prefix}-exports-dlq"
+  kms_master_key_id         = var.kms_key_arn
+  message_retention_seconds = 1209600
+}
+
+resource "aws_sqs_queue" "exports" {
+  name                       = "${var.name_prefix}-exports"
+  kms_master_key_id          = var.kms_key_arn
+  visibility_timeout_seconds = var.exports_visibility_timeout_seconds
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.exports_dlq.arn
+    maxReceiveCount     = local.exports_max_receive_count
+  })
+}
+
 resource "aws_sns_topic" "titulares" {
   name              = "${var.name_prefix}-titulares"
   kms_master_key_id = var.kms_key_arn
@@ -140,6 +160,51 @@ resource "aws_cloudwatch_metric_alarm" "webhook_dlq" {
   metric_name         = "ApproximateNumberOfMessagesVisible"
   dimensions          = { QueueName = aws_sqs_queue.webhook_dlq.name }
   statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "exports_age" {
+  alarm_name          = "${var.name_prefix}-exports-age"
+  alarm_description   = "Hay un mensaje en la cola de exportaciones hace más de ${var.exports_max_age_seconds} segundos: el exportador no lo tomó o lleva todo ese tiempo armando la exportación"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  dimensions          = { QueueName = aws_sqs_queue.exports.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.exports_max_age_seconds
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "exports_dlq" {
+  alarm_name          = "${var.name_prefix}-exports-dlq"
+  alarm_description   = "Hay mensajes en la DLQ de exportaciones: los que mandó el exportador y los que la cola pasó sola después de ${local.exports_max_receive_count} recepciones sin resolverse"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.exports_dlq.name }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "exports_dlq_sent" {
+  alarm_name          = "${var.name_prefix}-exports-dlq-sent"
+  alarm_description   = "El exportador mandó a la DLQ una exportación que agotó los reintentos: avisa por cada una, aunque la DLQ ya tenga otras"
+  namespace           = "AWS/SQS"
+  metric_name         = "NumberOfMessagesSent"
+  dimensions          = { QueueName = aws_sqs_queue.exports_dlq.name }
+  statistic           = "Sum"
   period              = 60
   evaluation_periods  = 1
   comparison_operator = "GreaterThanThreshold"

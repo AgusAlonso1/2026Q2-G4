@@ -57,6 +57,12 @@ variable "archive_instance_type" {
   default     = "t3.medium"
 }
 
+variable "exports_instance_type" {
+  description = "Tipo de instancia de los hosts del exportador. Una tarea por instancia, de medio vCPU y 1 GB: arma el CSV en streaming."
+  type        = string
+  default     = "t3.small"
+}
+
 variable "archive_rows_per_part" {
   description = "Filas por archivo Parquet de un mes archivado. Cada parte agrupa un rango de cuentas, y una cuenta nunca queda en dos partes."
   type        = number
@@ -109,7 +115,7 @@ variable "db_multi_az" {
 }
 
 variable "db_max_connections" {
-  description = "Conexiones a la base que se reparten entre todas las tareas. Tiene que quedar por debajo del max_connections de db_instance_class (unas 80 en db.t3.micro), con margen para conectarse a mano."
+  description = "Tope de conexiones a la base de todas las tareas juntas, en el pico de un deploy. Cada servicio tiene su pool por tarea (db_pool en locals.tf) y el plan falla si no entran. Tiene que quedar por debajo del max_connections de db_instance_class (unas 80 en db.t3.micro), con margen para conectarse a mano."
   type        = number
   default     = 60
 }

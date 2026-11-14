@@ -86,7 +86,7 @@ resource "aws_ecs_capacity_provider" "this" {
       status                    = "ENABLED"
       target_capacity           = var.target_capacity
       minimum_scaling_step_size = 1
-      maximum_scaling_step_size = 2
+      maximum_scaling_step_size = var.maximum_scaling_step_size
     }
   }
 }

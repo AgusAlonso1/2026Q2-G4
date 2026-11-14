@@ -10,6 +10,12 @@ arm64, para Graviton). Con `target_capacity` menor a 100 el capacity provider de
 con lugar libre: una tarea nueva, por scale-out o por deploy, arranca sin esperar a que se
 lance una instancia. El disco raíz va cifrado y el launch template exige IMDSv2.
 
+Con cero instancias, el capacity provider no puede calcular cuántas faltan (su métrica,
+`CapacityProviderReservation`, divide por las instancias que hay) y agrega
+`maximum_scaling_step_size` de una vez. Para un servicio que arranca desde cero con una sola
+tarea conviene 1: con 2 se lanza una instancia de más, que queda vacía hasta que el capacity
+provider la apaga, unos 15 minutos después.
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 
@@ -46,6 +52,7 @@ No modules.
 | <a name="input_instance_profile_arn"></a> [instance\_profile\_arn](#input\_instance\_profile\_arn) | Instance profile de las instancias. Lo necesita el agente para registrarse en el cluster. | `string` | n/a | yes |
 | <a name="input_instance_type"></a> [instance\_type](#input\_instance\_type) | Tipo de instancia. La AMI de ECS se elige según su arquitectura (x86 o arm64). | `string` | n/a | yes |
 | <a name="input_max_size"></a> [max\_size](#input\_max\_size) | Máximo de instancias del ASG. | `number` | n/a | yes |
+| <a name="input_maximum_scaling_step_size"></a> [maximum\_scaling\_step\_size](#input\_maximum\_scaling\_step\_size) | Máximo de instancias que el capacity provider agrega de una vez. Desde cero instancias agrega este máximo, aunque las tareas entren en menos. | `number` | `2` | no |
 | <a name="input_name"></a> [name](#input\_name) | Nombre del launch template, el ASG y el capacity provider. | `string` | n/a | yes |
 | <a name="input_security_group_id"></a> [security\_group\_id](#input\_security\_group\_id) | SG de las instancias. Las tareas usan el suyo propio. | `string` | n/a | yes |
 | <a name="input_subnet_ids"></a> [subnet\_ids](#input\_subnet\_ids) | Subredes de las instancias. El agente llega a ECS, ECR y CloudWatch Logs por los interface endpoints. | `list(string)` | n/a | yes |

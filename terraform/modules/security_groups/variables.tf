@@ -19,6 +19,6 @@ variable "db_port" {
 }
 
 variable "s3_prefix_list_id" {
-  description = "Prefix list del gateway endpoint de S3: destino de la salida a S3 de API y archivador."
+  description = "Prefix list del gateway endpoint de S3: destino de la salida a S3 de la API, el archivador y el exportador."
   type        = string
 }

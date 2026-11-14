@@ -43,3 +43,14 @@ variable "target_capacity" {
     error_message = "target_capacity va de 1 a 100."
   }
 }
+
+variable "maximum_scaling_step_size" {
+  description = "Máximo de instancias que el capacity provider agrega de una vez. Desde cero instancias agrega este máximo, aunque las tareas entren en menos."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.maximum_scaling_step_size >= 1 && var.maximum_scaling_step_size <= 10000 && floor(var.maximum_scaling_step_size) == var.maximum_scaling_step_size
+    error_message = "maximum_scaling_step_size es un entero de 1 a 10000, el rango que acepta ECS."
+  }
+}

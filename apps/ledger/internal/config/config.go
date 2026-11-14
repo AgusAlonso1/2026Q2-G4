@@ -42,10 +42,8 @@ type Config struct {
 
 	ConciliacionIntervalo time.Duration
 
-	WebhookURL      string
-	WebhookSecreto  string
-	WebhookIntentos int
-	WebhookEspera   time.Duration
+	SNSTopicARN    string
+	WebhookSecreto string
 
 	RetencionMeses     int
 	ArchivadoIntervalo time.Duration
@@ -72,10 +70,8 @@ func Cargar() (Config, error) {
 		AdminAbierto:           os.Getenv("ADMIN_ABIERTO") == "1",
 		Bienvenida:             int64(entero("SALDO_BIENVENIDA_CENTAVOS", 5000000)),
 		ConciliacionIntervalo:  duracion("CONCILIACION_INTERVALO", 30*time.Second),
-		WebhookURL:             os.Getenv("WEBHOOK_URL"),
+		SNSTopicARN:            os.Getenv("SNS_TOPIC_ARN"),
 		WebhookSecreto:         os.Getenv("WEBHOOK_SECRET"),
-		WebhookIntentos:        entero("WEBHOOK_MAX_ATTEMPTS", 3),
-		WebhookEspera:          duracion("WEBHOOK_BACKOFF", 200*time.Millisecond),
 		RetencionMeses:         entero("ARCHIVADO_RETENCION_MESES", 12),
 		ArchivadoIntervalo:     duracion("ARCHIVADO_INTERVALO", 30*time.Second),
 	}
@@ -88,10 +84,6 @@ func Cargar() (Config, error) {
 
 	if c.Bienvenida < 0 {
 		return c, fmt.Errorf("SALDO_BIENVENIDA_CENTAVOS no puede ser negativo")
-	}
-
-	if c.WebhookURL != "" && c.WebhookSecreto == "" {
-		return c, fmt.Errorf("hay WEBHOOK_URL pero falta WEBHOOK_SECRET")
 	}
 	return c, nil
 }

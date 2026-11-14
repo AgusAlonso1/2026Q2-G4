@@ -1,4 +1,4 @@
-# Núcleo Transaccional Elástico — TP3 (Terraform)
+# Núcleo Transaccional Elástico — TP4 (Terraform)
 
 Cloud Computing · ITBA · 2026Q2 · Grupo 4
 
@@ -6,6 +6,7 @@ Núcleo transaccional de un PSP (proveedor de servicios de pago) desplegado en A
 Cada usuario tiene una cuenta virtual con la que transfiere a otras cuentas, ingresa y retira
 dinero hacia el exterior a través de un proveedor; cada operación se liquida dentro del mismo
 request contra un ledger de partida doble en PostgreSQL, y los meses viejos se archivan en S3.
+Cada orden terminada se publica como evento en SNS, y de ahí sale el webhook hacia otro sistema.
 
 La arquitectura detallada, con el porqué de cada decisión y cómo se aplicaron las correcciones de
 las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
@@ -23,12 +24,15 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 4. La API valida el token contra Cognito y liquida cada operación en RDS PostgreSQL Multi-AZ, en
    las subredes de `data`.
 5. Los ingresos y egresos hacia el exterior van al proveedor por el NAT. Por defecto es el
-   proveedor simulado que trae la propia API en `/servicio-mock`. Si hay `webhook_url`, la API
-   avisa ahí cada orden terminada.
-6. Todos los días, en la ventana de archivado, ECS levanta una tarea del archivador en las
+   proveedor simulado que trae la propia API en `/servicio-mock`.
+6. Cuando una orden termina, la API publica un evento en el topic SNS `ledger-events` por el
+   interface endpoint de SNS. El topic lo deja en la cola SQS `ledger-webhook`, y una Lambda lo
+   firma y lo manda a `webhook_url`. Lo que agota los reintentos queda en una DLQ, cuya alarma
+   avisa por mail (topic `ledger-alerts`).
+7. Todos los días, en la ventana de archivado, ECS levanta una tarea del archivador en las
    subredes de `archive`, que no tienen salida a Internet. Mueve a S3 (`transaction-history/`)
    los meses que superan la retención, por el gateway endpoint.
-7. El extracto de un mes archivado lo arma la API leyendo ese objeto de S3; las exportaciones
+8. El extracto de un mes archivado lo arma la API leyendo ese objeto de S3; las exportaciones
    del histórico también quedan en el bucket (`exports/`).
 
 Toda la operación (deploy, plan y destrucción) se hace desde **GitHub Actions**: el workflow
@@ -88,6 +92,14 @@ En la captura, el recuadro sólido marca los obligatorios y el punteado dos de l
 Los tres salen de **AWS Details → AWS CLI** en el laboratorio y vencen con la sesión: hay que
 volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
+#### Emails de notificación
+
+En la pestaña **Variables**, `NOTIFICATION_EMAILS`: emails separados por comas (por ejemplo
+`ana@gmail.com,beto@itba.edu.ar`). Cada uno se suscribe al topic SNS de alertas de operación
+(la alarma de la DLQ del webhook). Después del primer Deploy, a cada dirección le llega un mail
+de **AWS Notifications** con el link para confirmar la suscripción. Si queda vacía, no hay
+alertas por mail.
+
 #### Opcional: conectar el despliegue con el de otro equipo
 
 Sin nada de esto, el despliegue funciona solo: los ingresos y egresos van al proveedor simulado
@@ -96,8 +108,8 @@ dos conexiones posibles con otro despliegue, independientes entre sí:
 
 - **Proveedor.** Un equipo manda sus ingresos y egresos al `/servicio-mock` del otro, en vez de
   al suyo. El que hace de proveedor no cambia nada de su lado; sólo comparte su clave del mock.
-- **Webhook.** Cada vez que una orden termina, la API le manda un aviso firmado (cabecera
-  `X-Ledger-Signature`) a `<api_url del otro>/webhooks/recibidos`. El que recibe verifica la
+- **Webhook.** Cada vez que una orden termina, la API publica un evento en SNS y una Lambda le
+  manda un aviso firmado (cabecera `X-Ledger-Signature`) a `<api_url del otro>/webhooks/recibidos`. El que recibe verifica la
   firma con el mismo secreto, y el aviso aparece en su pestaña *Operación*.
 
 Los valores se cargan en la misma pantalla que los de AWS. Los workflows Deploy y Terraform se
@@ -108,7 +120,7 @@ los pasan a Terraform como `TF_VAR_*`:
 | `MOCK_API_KEY` | Secrets | La clave que exige **mi** `/servicio-mock`. Si otro equipo me usa de proveedor, se la paso | Se genera una, distinta en cada despliegue desde cero |
 | `PROVEEDOR_URL` | Variables | Adónde mando **mis** ingresos y egresos: `<api_url del otro>/servicio-mock` | Mi propio `/servicio-mock` |
 | `PROVEEDOR_API_KEY` | Secrets | La clave del proveedor al que llamo: el `MOCK_API_KEY` del otro | La de mi propio mock |
-| `WEBHOOK_URL` | Variables | Adónde aviso **mis** órdenes terminadas: `<api_url del otro>/webhooks/recibidos` | No aviso a nadie |
+| `WEBHOOK_URL` | Variables | Adónde la Lambda del webhook avisa **mis** órdenes terminadas: `<api_url del otro>/webhooks/recibidos` | La Lambda descarta los avisos |
 | `WEBHOOK_SECRET` | Secrets | Con qué firmo los avisos que mando y verifico los que recibo. Tiene que ser igual en los dos despliegues | Se genera uno |
 
 Por ejemplo, si el equipo B usa al equipo A de proveedor y los dos se avisan las órdenes:
@@ -129,8 +141,8 @@ que el orden es:
    desplegar.
 2. Los dos corren **Deploy** sin URL y se pasan la `api_url` que queda en el resumen del run.
 3. Cada uno carga `PROVEEDOR_URL` y/o `WEBHOOK_URL` con la `api_url` del otro y vuelve a correr
-   **Deploy**. Este segundo Deploy actualiza el servicio de ECS, pero no el NLB, así que la
-   `api_url` no cambia.
+   **Deploy**. Este segundo Deploy no toca el NLB, así que la `api_url` no cambia. La
+   `WEBHOOK_URL` sólo actualiza la Lambda del webhook, sin reemplazar las tareas de la API.
 
 Para el proveedor, el segundo Deploy se puede evitar: la tarjeta de proveedor de *Operación*
 (o `POST /admin/proveedor`) cambia la URL en caliente, y el cambio queda guardado en la base
@@ -260,6 +272,17 @@ Después, entrar por `website_url`:
 
    ![Operación: estado del despliegue, base y tarea que atendió el pedido](img/operacion.png)
 
+5. **Eventos.** Con `WEBHOOK_URL` cargada, cada orden terminada aparece en *Avisos recibidos*
+   del otro despliegue, con la firma verificada. Para verlos sin otro equipo, apuntar
+   `WEBHOOK_URL` a la propia API (`<api_url>/webhooks/recibidos`). Lo que hace la Lambda queda
+   en `/aws/lambda/ledger-webhook` de CloudWatch Logs.
+
+   Para ver la DLQ, apuntar `WEBHOOK_URL` a una ruta que no existe (por ejemplo
+   `<api_url>/webhooks/no-existe`), volver a correr Deploy y hacer una transferencia. SQS
+   reintenta una vez por minuto; al quinto fallo el aviso pasa a `ledger-webhook-dlq` y a las
+   direcciones de `NOTIFICATION_EMAILS` les llega la alarma `ledger-webhook-dlq`. Después,
+   volver a la URL correcta y vaciar la DLQ (**SQS → ledger-webhook-dlq → Purge**).
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
@@ -267,7 +290,7 @@ Después, entrar por `website_url`:
 ![Workflow Destroy: Run workflow con la confirmación destroy](img/destroy.png)
 
 Borra todos los recursos y, cuando el state quedó vacío, también los buckets (ver
-[Estado](ARCHITECTURE.md#8-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
+[Estado](ARCHITECTURE.md#9-estado)). Sólo quedan la clave KMS, que KMS borra a los 7 días, y
 el log group que crea Container Insights (`/aws/ecs/containerinsights/ledger-cluster/performance`,
 con retención de un día); ninguno de los dos molesta al próximo Deploy.
 
@@ -312,7 +335,7 @@ script.
 
 **El bucket del state** se crea aparte por otro motivo: el backend S3 tiene que existir antes de
 `terraform init`, así que no puede ser un recurso del mismo state (ver
-[Estado](ARCHITECTURE.md#8-estado)).
+[Estado](ARCHITECTURE.md#9-estado)).
 
 `make destroy` (y el workflow **Destroy**) borra los tres buckets con todas sus versiones, pero
 sólo cuando `terraform destroy` dejó el state vacío. En una cuenta sin ese SCP, los dos buckets
@@ -341,9 +364,10 @@ y los nombres de las subredes se derivan en [`locals.tf`](terraform/organization
 
 - `aws_vpc_endpoint.s3`: gateway endpoint de S3 en las tablas de `app` y `archive`, con una
   política que sólo deja llegar al bucket del proyecto y al de las capas de ECR.
-- `aws_vpc_endpoint.interface`: un interface endpoint por servicio que necesita el agente de
-  ECS (`ecs`, `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`), en
-  las subredes de `app`, que sólo acepta credenciales de la propia cuenta.
+- `aws_vpc_endpoint.interface`: un interface endpoint por servicio que necesitan el agente de
+  ECS (`ecs`, `ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`) y la
+  API para publicar los eventos (`sns`), en las subredes de `app`, que sólo acepta credenciales
+  de la propia cuenta.
 
 **Versión:** `~> 6.7`.
 
@@ -406,6 +430,19 @@ access log JSON por request a su propio log group.
 **Recursos:** `aws_cognito_user_pool.this`, `aws_cognito_user_pool_domain.this`,
 `aws_cognito_user_pool_client.this`, `aws_secretsmanager_secret.client`,
 `aws_lambda_function.callback`, `aws_apigatewayv2_api.this` y sus rutas, integración y stage.
+
+---
+
+### [`modules/events`](terraform/modules/events)
+
+Topic SNS `ledger-events`, donde la API publica cada orden terminada, y una cola SQS con DLQ
+suscripta a él, que lee la Lambda del webhook ([`apps/webhook`](apps/webhook)). Un topic de
+alertas con suscripciones de email recibe la alarma de la DLQ (ver
+[Eventos y notificaciones](ARCHITECTURE.md#7-eventos-y-notificaciones)).
+
+**Recursos:** `aws_sns_topic.events`, `aws_sns_topic.alerts`, `aws_sqs_queue.webhook` y
+`webhook_dlq`, `aws_lambda_function.this` (webhook), `aws_lambda_event_source_mapping.webhook`,
+`aws_cloudwatch_metric_alarm.webhook_dlq` y las suscripciones.
 
 ---
 
@@ -495,16 +532,18 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
 | `for_each` | `organization/main.tf` (`module "capacity"`, `module "service"`) | Instancias y servicio de ECS para la API y el archivador sin duplicar código |
-| `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesita el agente de ECS |
+| `for_each` | `organization/network.tf` | Un interface endpoint por servicio de AWS que necesitan el agente de ECS y la API |
 | `for_each` | `organization/secrets.tf` | Las cuatro claves generadas (`db`, `admin`, `mock`, `webhook`) y un secreto de Secrets Manager por servicio |
 | `for_each` | `modules/security_groups/main.tf` | Un SG por capa y una regla por fila de la tabla de reglas |
 | `for_each` | `modules/website/main.tf` | Un objeto de S3 por archivo del frontend |
 | `for_each` | `modules/auth/main.tf` | Las rutas `/callback` y `/logout` hacia la misma integración |
+| `for_each` | `modules/events/main.tf` | La Lambda del webhook con su zip y su log group, y una suscripción de alertas por cada email de `notification_emails` |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API) |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
+| `depends_on` | `modules/events/main.tf` | La suscripción de SNS a la cola se crea después de la política que deja escribir a SNS |
 | `depends_on` | `modules/storage/main.tf`, `modules/website/main.tf` | La política de cada bucket se aplica después de su bloqueo de acceso público |
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
@@ -535,7 +574,7 @@ el `plan`, no a mitad del apply.
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
 | `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
 | `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |
-| `archive_file` | `modules/auth/main.tf` | El zip de la Lambda del callback |
+| `archive_file` | `modules/auth/main.tf`, `modules/events/main.tf` | El zip de la Lambda del callback y el de la del webhook |
 
 ---
 
@@ -545,7 +584,7 @@ el `plan`, no a mitad del apply.
 .
 ├── .github/workflows/     # Terraform (validate + plan), Deploy, Destroy y los que ya traía el repo
 ├── Makefile               # init (con el bucket del state), imagen, plan, apply, destroy, fmt, validate
-├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, state y trade-offs
+├── ARCHITECTURE.md        # red, cómputo, secretos y cifrado, login, eventos, state y trade-offs
 ├── img/                   # diagrama de arquitectura (.png y .drawio) y capturas de los pasos
 ├── scripts/
 │   └── buckets.sh         # crea y borra los buckets: el del state y los del proyecto
@@ -558,12 +597,14 @@ el `plan`, no a mitad del apply.
 │       ├── database/
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
+│       ├── events/        # SNS, SQS con DLQ, Lambda del webhook y alertas
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/
     ├── ledger/            # backend en Go: binarios api y archivador, imagen con su Dockerfile
     ├── web/               # frontend estático (lo sube modules/website)
-    └── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
+    ├── callback/          # Lambda del callback de Cognito (JavaScript, sin dependencias ni build)
+    └── webhook/           # Lambda que entrega los avisos del webhook desde la cola SQS
 ```
 
 Arquitectura y decisiones de diseño: [`ARCHITECTURE.md`](ARCHITECTURE.md).

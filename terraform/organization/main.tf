@@ -108,3 +108,15 @@ module "service" {
   cpu_target        = each.value.cpu_target
   schedule          = each.value.schedule
 }
+
+module "events" {
+  source = "../modules/events"
+
+  name_prefix         = local.name_prefix
+  kms_key_arn         = aws_kms_key.this.arn
+  lambda_role_arn     = data.aws_iam_role.lab.arn
+  webhook_source_dir  = "${path.root}/../../apps/webhook"
+  webhook_url         = var.webhook_url
+  webhook_secret      = local.webhook_secret
+  notification_emails = local.notification_emails
+}

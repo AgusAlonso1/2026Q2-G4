@@ -83,9 +83,14 @@ func correr() error {
 		return err
 	}
 
-	notif := webhook.Nuevo(pool, cfg.WebhookURL, cfg.WebhookSecreto, cfg.WebhookIntentos, cfg.WebhookEspera)
+	notif, err := webhook.Nuevo(arranque, cfg.Region, cfg.SNSTopicARN)
+	if err != nil {
+		return err
+	}
 	if notif.Habilitado() {
-		slog.Info("webhook habilitado", "url", cfg.WebhookURL, "intentos", cfg.WebhookIntentos)
+		slog.Info("eventos habilitados", "topic", notif.Topic())
+	} else {
+		slog.Warn("sin SNS_TOPIC_ARN: las ordenes terminadas no se publican")
 	}
 
 	receptor := webhook.NuevoReceptor(pool, cfg.WebhookSecreto)

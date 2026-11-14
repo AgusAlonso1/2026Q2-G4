@@ -21,7 +21,6 @@ type ResumenReinicio struct {
 var tablasDeDatos = []string{
 
 	"transiciones",
-	"entregas_webhook",
 	"movimientos_banco",
 
 	"asientos",

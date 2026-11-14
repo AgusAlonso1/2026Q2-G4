@@ -10,12 +10,13 @@ El sistema es el núcleo transaccional de un PSP de una sola empresa. Cada usuar
 cuenta virtual con la que transfiere a otras cuentas del PSP, ingresa dinero desde su banco y
 lo retira hacia afuera a través de un proveedor de infraestructura financiera. Cada operación
 se liquida dentro del mismo request, de forma idempotente, contra un ledger de partida doble.
-Lo único diferido es el archivado de los meses viejos a S3, que ningún usuario pide.
+Lo único diferido es lo que ningún usuario espera: el archivado de los meses viejos a S3 y
+el webhook de cada orden terminada, que sale por SNS y SQS después de responder.
 
 Restricciones que guían el diseño:
 
 - **AWS Academy**: no se pueden crear usuarios ni roles de IAM. Las instancias usan
-  `LabInstanceProfile` y las tareas de ECS y la Lambda usan `LabRole`. Sólo está habilitada
+  `LabInstanceProfile` y las tareas de ECS y las Lambdas usan `LabRole`. Sólo está habilitada
   `us-east-1`.
 - **Reproducible desde el pipeline**: todo vive en código y se despliega y destruye desde
   GitHub Actions, en cualquier cuenta, sin editar nada. Los nombres que tienen que ser únicos
@@ -39,11 +40,11 @@ El aislamiento entre capas lo imponen los security groups, que se referencian en
 | SG | Entra | Sale |
 |---|---|---|
 | `nlb` | 80 desde Internet | La API (puerto de la app) |
-| `app` | Puerto de la app desde `nlb` | `data` (5432), S3 (443), Internet por el NAT (443 y 80: proveedor y webhook) |
+| `app` | Puerto de la app desde `nlb` | `data` (5432), S3 (443), `endpoints` (443: SNS), Internet por el NAT (443 y 80: proveedor) |
 | `archive` | Nada | `data` (5432), S3 (443) |
 | `data` | 5432 desde `app` y `archive` | Nada |
 | `host` | Nada | `endpoints` (443), S3 (443) |
-| `endpoints` | 443 desde `host` | Nada |
+| `endpoints` | 443 desde `host` y `app` | Nada |
 
 Las instancias (`host`) no aceptan ninguna conexión entrante: no hay SSH.
 
@@ -57,7 +58,7 @@ para negar un origen puntual, que es lo único que un security group no puede ex
 ### Entrada: por qué un NLB
 
 Fue la corrección de la segunda entrega (ver
-[Correcciones](#10-correcciones-de-entregas-anteriores)): por la naturaleza de la aplicación,
+[Correcciones](#11-correcciones-de-entregas-anteriores)): por la naturaleza de la aplicación,
 el balanceador correcto es uno de red y no uno de aplicación. Un PSP es un núcleo transaccional,
 no un sitio web, y lo que necesita de la entrada es lo que da la capa 4:
 
@@ -151,11 +152,12 @@ instancia tiene permisos que la tarea no necesita.
 
 El agente de ECS de cada instancia necesita hablar con ECS, ECR y CloudWatch Logs. Como las
 subredes de `archive` no tienen salida, lo hace por **interface endpoints** (`ecs`,
-`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`); las capas de la
+`ecs-agent`, `ecs-telemetry`, `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`, `sns`); las capas de la
 imagen vienen de S3 por el gateway endpoint. Las ENIs de los endpoints están en las subredes de `app`, pero se
 llega a ellas desde cualquier subred de la VPC: lo que limita quién entra es su security group,
-que sólo acepta a los hosts de ECS. Las instancias de la API usan los mismos endpoints, así que
-el NAT sólo lo usan las tareas de la API (proveedor, webhook y claves de Cognito).
+que acepta a los hosts de ECS y, para publicar en SNS, a las tareas de la API. Las instancias de
+la API usan los mismos endpoints, así que el NAT sólo lo usan las tareas de la API (proveedor y
+claves de Cognito).
 
 Todo el tráfico de la VPC hacia S3 de la región pasa por el gateway endpoint, también el de las
 subredes de `app`. Su política sólo deja llegar al bucket del proyecto y al de las capas de ECR:
@@ -265,7 +267,8 @@ salen a Internet.
 El client secret de Cognito está en un tercer secreto, `ledger/callback`. La Lambda del
 callback sólo recibe su ARN y lo lee con el SDK una vez por instancia; si la lectura falla no
 queda guardado y el próximo login reintenta. La Lambda no corre en la VPC, así que no necesita
-endpoint.
+endpoint. La Lambda del webhook hace lo mismo con `ledger/webhook`, que tiene sólo el secreto
+HMAC.
 
 Así se sigue lo que pide la clase de seguridad, no dejar secretos en el código, el repositorio
 ni las variables de entorno de la configuración: el valor no está en el repo ni en la task
@@ -293,17 +296,18 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
 
 - **Qué cifra:** los secretos de Secrets Manager, el bucket del archivo (SSE-KMS con *bucket
   key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), el
-  almacenamiento y los backups de RDS, las imágenes de ECR y los logs de ECS, de la Lambda y
-  de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
+  almacenamiento y los backups de RDS, las imágenes de ECR, los topics de SNS, las colas de
+  SQS y los logs de ECS, de las Lambdas y de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
   EBS (`aws/ebs`) y no con la del proyecto: para que Auto Scaling lance instancias con discos
   cifrados con una clave propia, su rol de servicio tendría que figurar en la política de la
   clave.
-- **Quién la usa:** la política nombra tres principales: la cuenta (sin ese permiso la clave
-  quedaría inadministrable), el `LabRole`, sólo para las operaciones de cifrado (nombrado
-  explícitamente para no depender de lo que permita su política de IAM en el laboratorio) y
-  CloudWatch Logs, limitado a los log groups de la cuenta. El permiso de la cuenta delega en
+- **Quién la usa:** la política nombra a la cuenta (sin ese permiso la clave quedaría
+  inadministrable), al `LabRole`, sólo para las operaciones de cifrado (nombrado explícitamente
+  para no depender de lo que permita su política de IAM en el laboratorio), a CloudWatch Logs,
+  limitado a los log groups de la cuenta, y a SNS y CloudWatch, sólo para cifrar y descifrar:
+  SNS escribe en la cola cifrada y CloudWatch publica las alarmas en el topic cifrado. El permiso de la cuenta delega en
   IAM, y la política de IAM del `LabRole` es amplia: en la práctica también puede administrar y
-  borrar la clave (ver [Trade-offs](#9-trade-offs)).
+  borrar la clave (ver [Trade-offs](#10-trade-offs)).
 - **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
   antes se sigue pudiendo leer.
 - **Retiro:** deshabilitar la clave corta de una vez el acceso a todos esos datos. Al
@@ -339,7 +343,39 @@ HTTP.
 `apps/web/`. Los datos para la API (`issuer`, `client_id`) y el `user_pool_id` para crear
 usuarios por CLI están en `terraform output cognito`.
 
-## 7. Frontend
+## 7. Eventos y notificaciones
+
+Cuando una orden llega a un estado terminal, la API publica un evento en el topic SNS
+`ledger-events` ([`modules/events`](terraform/modules/events)) y responde sin esperar. El topic
+desacopla a la API de quién escucha: hoy lo consume el webhook, y sumar otro consumidor es
+sumar una suscripción, sin tocar la API.
+
+| Consumidor | Camino | Si falla |
+|---|---|---|
+| Webhook | SNS → SQS `ledger-webhook` → Lambda ([`apps/webhook`](apps/webhook)) → POST firmado | SQS reintenta 5 veces; después va a la DLQ, que dispara una alarma |
+
+- **Por qué lleva cola.** El webhook es un contrato con otro sistema, cuyo endpoint puede estar
+  caído un rato: la cola guarda el aviso y lo reintenta, y lo que agota los reintentos queda en
+  la DLQ para revisarlo.
+- **Qué resuelve.** Antes el webhook salía de una goroutine dentro de la tarea de la API: si ECS
+  la apagaba (scale-in o deploy), los avisos en curso quedaban colgados. Ahora la entrega no
+  depende de la tarea, y cambiar `webhook_url` actualiza la Lambda sin reemplazar tareas.
+- **Contrato del aviso.** El mismo de antes (JSON firmado con HMAC en `X-Ledger-Signature`),
+  más `evento_id = <orden_id>:<estado>`. SQS entrega al menos una vez, así que el receptor
+  descarta los `evento_id` repetidos, sólo si la firma es válida: si no, una firma falsa podría
+  ocupar el id de un aviso real. El mensaje lleva `tipo` y `estado` como atributos, para que
+  una suscripción nueva pueda filtrar sin leer el cuerpo.
+- **Alertas.** Un topic aparte, `ledger-alerts`, manda por email la alarma de la DLQ a las
+  direcciones de `notification_emails` (suscripciones de SNS que cada una confirma).
+- **Red y cifrado.** La API publica por el interface endpoint de SNS, sin pasar por el NAT. La
+  Lambda corre fuera de la VPC y hace el POST directo a `webhook_url`. Los topics y las colas
+  se cifran con la clave del proyecto, cuya política habilita a SNS (escribe en la cola) y a
+  CloudWatch (publica las alarmas en el topic).
+- **Sin mails a los titulares.** Se descartó mandarlos por SES porque AWS Academy no habilita
+  SES: el rol del laboratorio no tiene permisos de SES (`ses:GetAccount` y
+  `ses:VerifyEmailIdentity` dan `AccessDenied`).
+
+## 8. Frontend
 
 Sitio estático en el bucket con website hosting: HTML, CSS y módulos de JavaScript sin
 dependencias ni paso de build, que Terraform sube archivo por archivo junto con `config.json`.
@@ -361,7 +397,7 @@ Las decisiones que importan son de seguridad:
 Las operaciones que el proveedor no confirma enseguida (un `202`) se muestran como "en
 revisión", no como éxito ni como error, y el comprobante ofrece actualizar el estado.
 
-## 8. Estado
+## 9. Estado
 
 El state vive en S3, en `ledger-tfstate-<cuenta>-us-east-1-an`, con la key
 `tp3/terraform.tfstate`. Tiene que ser remoto porque Deploy y Destroy corren en GitHub Actions:
@@ -393,30 +429,31 @@ nuevo y Destroy no tendría qué destruir.
   website, que no leen el object lock. `make destroy` los vacía, con todas sus versiones, y los
   borra junto con el del state.
 
-## 9. Trade-offs
+## 10. Trade-offs
 
 - **Un solo NAT**, en la primera AZ. Ahorra el costo de uno por AZ; si esa AZ se cae, las
   tareas de la API de la otra siguen atendiendo y llegando a la base y a los servicios de AWS
-  (por los endpoints), pero no al proveedor, al webhook ni a las claves públicas de Cognito. Las
+  (por los endpoints), pero no al proveedor ni a las claves públicas de Cognito. El webhook no
+  depende del NAT: la Lambda corre fuera de la VPC. Las
   tareas que ya tenían las claves siguen validando sesiones; una tarea nueva no puede hasta que
   vuelva el NAT. Con el proveedor por defecto, el mock de la propia API, las operaciones con el
   proveedor tampoco se completan, porque la API lo llama por el NLB.
-- **Siete interface endpoints**, en las dos AZ: unos USD 0,14 por hora, tres veces el NAT.
+- **Ocho interface endpoints**, en las dos AZ: unos USD 0,16 por hora, más de tres veces el NAT.
   Son el precio de que el archivador no tenga ninguna salida a Internet: la alternativa barata
   es darle ruta al NAT, y entonces el único componente que borra datos del ledger podría
   mandarlos a cualquier lado. También dejan las instancias de la API independientes del NAT
-  para hablar con ECS, ECR y Logs.
+  para hablar con ECS, ECR y Logs, y a las tareas para publicar los eventos en SNS.
 - **La API en HTTP, sin TLS.** El laboratorio no tiene un dominio propio para emitir un
   certificado. El access token y las claves de operación (`X-Admin-Key`, `X-Mock-Key`) viajan
   en claro entre el navegador y el NLB; el login, en cambio, es HTTPS de punta a punta (Hosted
   UI y API Gateway).
 - **Los secretos siguen en el state de Terraform**, porque los genera Terraform. El state está
   en un bucket privado y cifrado.
-- **`LabRole` para todo**: las tareas, el agente de ECS y la Lambda tienen los permisos del rol
+- **`LabRole` para todo**: las tareas, el agente de ECS y las Lambdas tienen los permisos del rol
   del laboratorio, no unos mínimos por componente. Por eso la separación de custodios de la
   clave KMS no es real: en una cuenta propia cada servicio tendría su rol y la política de la
   clave nombraría sólo a los que la necesitan.
-- **Los buckets del proyecto quedan fuera del state** (ver [Estado](#8-estado)). Terraform no
+- **Los buckets del proyecto quedan fuera del state** (ver [Estado](#9-estado)). Terraform no
   se entera si alguien borra uno a mano, `terraform apply` sin `make apply` falla porque no
   existen, y el nombre se arma en dos lugares: el script y los módulos. Para que no se
   desalineen, el `Makefile` define `PROJECT` una sola vez y se lo pasa a los dos (al script y a
@@ -427,16 +464,20 @@ nuevo y Destroy no tendría qué destruir.
   tiene que poder borrarla sin un apply previo. Mientras está desplegada guarda 7 días de backups
   automáticos, que permiten volver a cualquier punto de ese período (por ejemplo, después de un
   reinicio del ledger).
-- **Sin X-Ray en la Lambda, Performance Insights en RDS ni VPC Flow Logs**, por el laboratorio:
+- **Sin X-Ray en las Lambdas, Performance Insights en RDS ni VPC Flow Logs**, por el laboratorio:
   el usuario de AWS Academy no puede leer las trazas de X-Ray ni las métricas de Performance
   Insights (los dos se pueden activar, pero nadie vería lo que juntan), y la trust policy de
   `LabRole` no incluye a `vpc-flow-logs.amazonaws.com`, así que los Flow Logs sólo podrían ir a
   S3, a un bucket aparte.
+- **El evento se publica después del commit.** Si la tarea muere entre el commit y la
+  publicación, ese aviso se pierde. La ventana es una llamada a SNS, y al apagarse la tarea la
+  API espera las publicaciones en curso. Un outbox (el evento escrito en la misma transacción)
+  lo evitaría, a costa de tocar la transacción de cada operación.
 - **Sin autenticación IAM en RDS**: la API entra con la credencial de Secrets Manager, y
   habilitarla sólo sumaría una vía de login que nadie usa.
 - tfsec marca estas decisiones; cada una está ignorada en el código con el motivo al lado.
 
-## 10. Correcciones de entregas anteriores
+## 11. Correcciones de entregas anteriores
 
 | Entrega | Corrección | Qué se hizo |
 |---|---|---|
@@ -444,15 +485,16 @@ nuevo y Destroy no tendría qué destruir.
 | TP1 | Un sistema financiero asíncrono obliga a lidiar con concurrencia y consistencia eventual | La concurrencia se resuelve en la base: bloqueo de fila sobre `saldos` en orden de id, idempotencia por restricción única y transacciones que escriben asientos y saldos juntos (ver [Datos](#4-datos)). La liquidación en sí es síncrona, dentro del request: el caso que fija la latencia es un pago con una persona esperando, y una cola agregaba más espera que la que ahorraba. Lo que sí es asíncrono es lo que depende de afuera: los egresos que el proveedor no confirma quedan en duda y se resuelven por consulta, y el archivado corre aparte, por horario |
 | TP2 | Por la naturaleza de la aplicación, usar un network load balancer y no un application load balancer | NLB con targets `ip`. La justificación (latencia, picos sin calentamiento, conexiones largas, ISO 8583 sobre TCP, TLS de punta a punta e IP fija) está en [Entrada: por qué un NLB](#entrada-por-qué-un-nlb). La API escala por CPU, porque la métrica de requests por target es sólo del ALB |
 
-## 11. Requisitos del TP
+## 12. Requisitos del TP
 
 | Requisito | Dónde en este repo |
 |---|---|
 | ≥ 1 módulo externo | `terraform-aws-modules/vpc/aws ~> 6.7` en [`network.tf`](terraform/organization/network.tf) |
-| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `database`, `load_balancer`, `capacity`, `service` (8) |
+| ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `database`, `load_balancer`, `capacity`, `service`, `events` (9) |
 | ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `floor`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |
 | Pipeline (init, validate, plan, apply) | Workflows **Terraform** y **Deploy** en [`.github/workflows`](.github/workflows) |
 | Diagrama actualizado | [`img/arquitectura.png`](img/arquitectura.png), con su fuente editable en [`img/arquitectura.drawio`](img/arquitectura.drawio) |
-| Correcciones previas | [Sección 10](#10-correcciones-de-entregas-anteriores) |
+| Correcciones previas | [Sección 11](#11-correcciones-de-entregas-anteriores) |
+| Al menos un SQS o SNS (TP4) | [Eventos y notificaciones](#7-eventos-y-notificaciones): SNS, SQS con DLQ y Lambda |

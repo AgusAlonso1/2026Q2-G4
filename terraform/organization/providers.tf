@@ -6,6 +6,16 @@ provider "aws" {
   }
 }
 
+# La otra región que habilita AWS Academy: ahí van las copias de los backups (Disaster Recovery).
+provider "aws" {
+  alias  = "dr"
+  region = var.dr_region
+
+  default_tags {
+    tags = local.common_tags
+  }
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }

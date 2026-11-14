@@ -98,3 +98,23 @@ output "monitoring" {
     log_queries      = module.monitoring.query_names
   }
 }
+
+output "audit" {
+  description = "Auditoría: bucket de logs (CloudTrail, flow logs y Config), reglas de Config y presupuesto."
+  value = {
+    logs_bucket  = module.audit.bucket_name
+    trail_arn    = module.audit.trail_arn
+    config_rules = module.audit.config_rule_names
+    budget       = module.audit.budget_name
+  }
+}
+
+output "backup" {
+  description = "AWS Backup: vault principal, vault de DR en la otra región y el plan diario de RDS."
+  value = {
+    vault     = module.backup.vault_name
+    dr_vault  = module.backup.dr_vault_name
+    dr_region = module.backup.dr_region
+    plan_id   = module.backup.plan_id
+  }
+}

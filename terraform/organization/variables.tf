@@ -15,6 +15,23 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "dr_region" {
+  description = "Región de las copias de los backups. AWS Academy habilita us-east-1 y us-west-2."
+  type        = string
+  default     = "us-west-2"
+
+  validation {
+    condition     = var.dr_region != var.aws_region
+    error_message = "La región de DR tiene que ser distinta de la del despliegue."
+  }
+}
+
+variable "budget_limit_usd" {
+  description = "Presupuesto mensual en dólares. Avisa a NOTIFICATION_EMAILS al 80 % de lo gastado y cuando el pronóstico pasa el 100 %."
+  type        = number
+  default     = 50
+}
+
 variable "vpc_cidr" {
   description = "CIDR de la VPC. Las subredes se derivan de él en locals.tf."
   type        = string

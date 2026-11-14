@@ -21,3 +21,8 @@ output "identifier" {
   description = "Identificador de la instancia: la dimensión DBInstanceIdentifier de sus métricas en CloudWatch."
   value       = aws_db_instance.this.identifier
 }
+
+output "arn" {
+  description = "ARN de la instancia: lo que respalda AWS Backup."
+  value       = aws_db_instance.this.arn
+}

@@ -168,3 +168,25 @@ module "monitoring" {
   db_instance_identifier  = module.database.identifier
   waf_web_acl_name        = module.waf.web_acl_name
 }
+
+module "audit" {
+  source = "../modules/audit"
+
+  name_prefix      = local.name_prefix
+  kms_key_arn      = aws_kms_key.this.arn
+  vpc_id           = module.vpc.vpc_id
+  budget_limit_usd = var.budget_limit_usd
+  budget_emails    = local.notification_emails
+}
+
+module "backup" {
+  source = "../modules/backup"
+  providers = {
+    aws    = aws
+    aws.dr = aws.dr
+  }
+
+  name_prefix     = local.name_prefix
+  db_instance_arn = module.database.arn
+  role_arn        = data.aws_iam_role.lab.arn
+}

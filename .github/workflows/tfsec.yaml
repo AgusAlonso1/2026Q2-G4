@@ -1,12 +1,19 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# tfsec sobre el Terraform: un reporte SARIF para la pestaña Security y comentarios en el pull
+# request con cada hallazgo.
+#
+# tfsec y el comentador se bajan de URLs fijas de sus releases, con el checksum verificado. Las
+# actions de aquasecurity que se usaban antes preguntaban la versión a la API de GitHub sin token,
+# que limita los pedidos por IP de los runners compartidos: cada tanto respondía 403 y el job
+# fallaba sin que el código tuviera nada que ver.
 
 name: Terraform Security
 
 on:
   pull_request:
+
+env:
+  TFSEC_VERSION: v1.28.14
+  COMMENTER_VERSION: v1.3.1
 
 jobs:
   tfsec-run:
@@ -19,31 +26,57 @@ jobs:
 
     steps:
       - name: Clone repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
 
+      - name: Instalar tfsec
+        run: |
+          base="https://github.com/aquasecurity/tfsec/releases/download/$TFSEC_VERSION"
+          curl -fsSL --retry 5 --retry-all-errors -o tfsec-linux-amd64 "$base/tfsec-linux-amd64"
+          curl -fsSL --retry 5 --retry-all-errors -o tfsec.checksums "$base/tfsec_checksums.txt"
+          grep ' tfsec-linux-amd64$' tfsec.checksums | sha256sum -c -
+          sudo install tfsec-linux-amd64 /usr/local/bin/tfsec
+
+      # --soft-fail: el reporte informa los hallazgos; las excepciones van en el código, con el motivo.
       - name: Run tfsec
-        uses: aquasecurity/tfsec-sarif-action@v0.1.3
-        with:
-          sarif_file: tfsec.sarif         
+        run: tfsec . --soft-fail --format sarif --out tfsec.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v2
-        with: # Path to SARIF file relative to the root of the repository
+        uses: github/codeql-action/upload-sarif@v3
+        with:
           sarif_file: tfsec.sarif
-          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   tf-comments:
     name: Terraform Security PR commenter
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Clone repo
-        uses: actions/checkout@master
+        uses: actions/checkout@v6
+
+      - name: Instalar tfsec y el comentador
+        run: |
+          base="https://github.com/aquasecurity/tfsec/releases/download/$TFSEC_VERSION"
+          curl -fsSL --retry 5 --retry-all-errors -o tfsec-linux-amd64 "$base/tfsec-linux-amd64"
+          curl -fsSL --retry 5 --retry-all-errors -o tfsec.checksums "$base/tfsec_checksums.txt"
+          grep ' tfsec-linux-amd64$' tfsec.checksums | sha256sum -c -
+          sudo install tfsec-linux-amd64 /usr/local/bin/tfsec
+
+          base="https://github.com/aquasecurity/tfsec-pr-commenter-action/releases/download/$COMMENTER_VERSION"
+          curl -fsSL --retry 5 --retry-all-errors -o commenter-linux-amd64 "$base/commenter-linux-amd64"
+          curl -fsSL --retry 5 --retry-all-errors -o commenter.checksums "$base/tfsec-pr-commenter-action_${COMMENTER_VERSION#v}_checksums.txt"
+          grep ' commenter-linux-amd64$' commenter.checksums | sha256sum -c -
+          sudo install commenter-linux-amd64 /usr/local/bin/commenter
+
+      # Lo mismo que hacía la action: tfsec deja results.json y el comentador lo lee. En un pull
+      # request desde un fork el token no puede comentar; con soft fail eso no rompe el check.
       - name: tfsec
-        uses: aquasecurity/tfsec-pr-commenter-action@1672d3f23fd98a39c30d0fb7d8d1b4f0967134bd
-        with:
-          working_directory: terraform/organization
-          tfsec_args: --exclude-path 'terraform/modules'
-          tfsec_formats: sarif,csv
-          soft_fail_commenter: true # Fails the check
-          github_token: ${{ github.token }}
+        env:
+          INPUT_GITHUB_TOKEN: ${{ github.token }}
+          INPUT_WORKING_DIRECTORY: terraform/organization
+          INPUT_SOFT_FAIL_COMMENTER: "true"
+        run: |
+          tfsec --out=results --format=json,sarif,csv --soft-fail --exclude-path 'terraform/modules' terraform/organization
+          commenter

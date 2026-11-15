@@ -106,10 +106,10 @@ volver a cargarlos cada vez que se inicia el lab, antes de correr un workflow.
 
 En la pestaña **Variables**, `NOTIFICATION_EMAILS`: emails separados por comas (por ejemplo
 `ana@gmail.com,beto@itba.edu.ar`). Cada uno se suscribe al topic SNS de alertas de operación
-(las alarmas de las DLQ del webhook y de las exportaciones, y la de una exportación que lleva más
-de una hora en la cola). Después del primer Deploy, a cada dirección le llega un mail
-de **AWS Notifications** con el link para confirmar la suscripción. Si queda vacía, no hay
-alertas por mail.
+(las alarmas de las DLQ del webhook y de las exportaciones, la de una exportación que lleva más
+de una hora en la cola y las de la API y la base) y recibe los avisos del presupuesto mensual.
+Después del primer Deploy, a cada dirección le llega un mail de **AWS Notifications** con el
+link para confirmar la suscripción. Si queda vacía, no hay alertas por mail ni presupuesto.
 
 #### Opcional: tamaño de los archivos del archivo
 
@@ -380,6 +380,25 @@ Después, entrar por `website_url`:
    reintentos queda en `ledger-exports-dlq`, con la exportación `fallida`, y sus alarmas llegan a
    `NOTIFICATION_EMAILS`.
 
+8. **Observabilidad.** `terraform output monitoring` (o el resumen del run de Deploy) tiene la
+   URL del dashboard de CloudWatch: tareas, CPU e instancias de ECS, targets del NLB, latencia,
+   pedidos y 5xx de la API, RDS, las colas del webhook y de las exportaciones, y el WAF, con el
+   estado de las alarmas arriba. Mientras se usa la billetera, las métricas de la API aparecen en
+   un par de minutos. Las alarmas avisan por mail a `NOTIFICATION_EMAILS` al dispararse y al
+   volver a OK. Las consultas guardadas están en **CloudWatch → Logs Insights → Saved queries**,
+   bajo `ledger/`.
+
+   Para ver el escalado en vivo, `make pico` sube el mínimo de la API a 4 tareas: en el dashboard
+   se ven las tareas deseadas, después las que corren y, si no hay lugar, la instancia nueva.
+   `make pico-fin` lo devuelve a 2. Llevar la CPU al 60 % con carga de afuera es difícil: la
+   mayoría de los pedidos responden en milisegundos.
+
+9. **Auditoría y costos.** `terraform output audit` tiene el bucket de logs, el trail y el
+   presupuesto. En **CloudTrail → Trails → `ledger-trail`** los eventos quedan en `cloudtrail/`
+   del bucket de logs, con un digest por hora (`aws cloudtrail validate-logs` lo verifica). Con
+   `NOTIFICATION_EMAILS`, el presupuesto está en **Billing and Cost Management → Budgets →
+   `ledger-mensual`**.
+
 ### 5. Destruir al terminar
 
 **Actions → Destroy → Run workflow** → escribir `destroy`.
@@ -402,6 +421,7 @@ make imagen    # construye apps/ledger y la sube a ECR (si ese tag ya está, no 
 make plan      # deja el plan en terraform/organization/tfplan, con ese tag
 make apply     # crea los buckets del proyecto si no existen y aplica ese plan
 make destroy   # pide confirmación; borra también los buckets
+make pico      # sube la API a 4 tareas para ver el escalado; make pico-fin la devuelve a 2
 ```
 
 `make help` lista el resto (`fmt`, `fmt-check`, `validate`, `clean`). Local y pipeline usan el
@@ -411,7 +431,7 @@ mismo state, así que lo desplegado desde un lado se ve y se destruye desde el o
 
 ## Buckets de S3: los crea la AWS CLI
 
-Los tres buckets del proyecto no son recursos `aws_s3_bucket`: los crea
+Los cuatro buckets no son recursos `aws_s3_bucket`: los crea
 [`scripts/buckets.sh`](scripts/buckets.sh) con `aws s3api create-bucket`, tanto en el pipeline
 como desde una máquina local.
 
@@ -419,6 +439,7 @@ como desde una máquina local.
 |---|---|---|
 | `ledger-<cuenta>-us-east-1-an` (archivo y exportaciones) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
 | `ledger-web-<cuenta>-us-east-1-an` (frontend) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
+| `ledger-logs-<cuenta>-us-east-1-an` (CloudTrail) | `make apply`, antes del `terraform apply` | El SCP de AWS Academy |
 | `ledger-tfstate-<cuenta>-us-east-1-an` (state) | `make init` | El backend lo necesita antes del `init` |
 
 **El SCP de AWS Academy.** La política de la organización del laboratorio niega
@@ -568,6 +589,32 @@ escaneados por consulta, y cuatro consultas guardadas (ver
 
 ---
 
+### [`modules/monitoring`](terraform/modules/monitoring)
+
+Observabilidad del lado síncrono, que `events` no cubre. Tres *metric filters* sobre el log de la
+API (una línea JSON por request) publican `Pedidos`, `Latencia` y `Respuestas5xx` sin tocar el
+código; siete alarmas (5xx y latencia p99 de la API, targets sanos del NLB, y CPU, conexiones,
+memoria y disco de RDS) avisan al topic de alertas al dispararse y al volver a OK; un dashboard
+junta cómputo, entrada, base y eventos; y cinco consultas guardadas de Logs Insights (ver
+[Observabilidad](ARCHITECTURE.md#observabilidad)).
+
+**Recursos:** `aws_cloudwatch_log_metric_filter.api`, `aws_cloudwatch_metric_alarm.this`,
+`aws_cloudwatch_dashboard.this` y `aws_cloudwatch_query_definition.this`.
+
+---
+
+### [`modules/audit`](terraform/modules/audit)
+
+Auditoría y costos. Configura el bucket de logs, que crea `scripts/buckets.sh` (versionado,
+SSE-S3, bloqueo público, sólo HTTPS y 90 días de retención), el trail de CloudTrail que escribe
+en él (cifrado con la clave del proyecto y con validación de integridad) y un presupuesto mensual
+de AWS Budgets que avisa por mail (ver [Auditoría y costos](ARCHITECTURE.md#auditoría-y-costos)).
+
+**Recursos:** la configuración del bucket de logs, `aws_cloudtrail.this` y
+`aws_budgets_budget.this`.
+
+---
+
 ### [`modules/database`](terraform/modules/database)
 
 RDS PostgreSQL Multi-AZ en las subredes de `data`, cifrada con la clave KMS del proyecto y sin
@@ -653,6 +700,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
 | `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
 | `can`, `regex`, `endswith` | `modules/analytics/variables.tf` | Valida que `history_start` sea un mes `AAAA-MM` y que los prefijos terminen en `/` |
+| `jsonencode`, `concat` | `modules/monitoring/main.tf` | El cuerpo del dashboard, armando cada panel desde una lista en `locals` |
 
 ### Meta-argumentos utilizados
 
@@ -667,13 +715,16 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `for_each` | `modules/events/main.tf` | La Lambda del webhook con su zip y su log group, y una suscripción de alertas por cada email de `notification_emails` |
 | `for_each` | `modules/service/main.tf` | Una acción programada por cada entrada de `schedule` (abrir y cerrar la ventana del archivador) |
 | `for_each` | `modules/analytics/main.tf` | Una consulta guardada de Athena por entrada de `local.queries` |
+| `for_each` | `modules/monitoring/main.tf` | Un metric filter, una alarma y una consulta de Logs Insights por entrada de su tabla en `locals` |
 | `count` | `modules/website/main.tf` | Publica `config.json` sólo si hay `runtime_config` |
 | `count` | `modules/service/main.tf` | La política de escalado por CPU sólo en los servicios que la piden (la API), y las de cola con sus alarmas sólo con `queue_scaling` (el exportador) |
+| `count` | `modules/audit/main.tf` | El presupuesto sólo si hay emails a los que avisar |
 | `depends_on` | `organization/main.tf` (`module "capacity"`) | Al destruir, las instancias y los servicios de ECS se borran antes que los endpoints y los security groups que usa su agente |
 | `depends_on` | `modules/auth/main.tf` | El log group de la Lambda existe antes que ella, con retención y dentro del state |
 | `depends_on` | `modules/events/main.tf` | La suscripción de SNS a la cola se crea después de la política que deja escribir a SNS |
 | `depends_on` | `modules/storage/main.tf`, `modules/website/main.tf` | La política de cada bucket se aplica después de su bloqueo de acceso público |
 | `depends_on` | `modules/storage/main.tf` | El lifecycle se aplica después del versionado, porque expira versiones anteriores |
+| `depends_on` | `modules/monitoring/main.tf` | Las alarmas sobre las métricas de la API se crean después de los metric filters que las publican |
 | `lifecycle` | `modules/service/main.tf` | `ignore_changes = [desired_count]`: la cantidad de tareas la maneja el autoscaling, no Terraform |
 | `lifecycle` | `modules/capacity/main.tf` | `ignore_changes = [desired_capacity]`: la cantidad de instancias la maneja el capacity provider |
 | `lifecycle` | `organization/secrets.tf` | `precondition` en un `terraform_data` propio, para que el error salga una sola vez: el plan falla si los pools de todas las tareas, en el pico de un deploy, superan `db_max_connections` |
@@ -707,8 +758,8 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 | Data source | Dónde | Para qué |
 |---|---|---|
 | `aws_availability_zones` | `organization/providers.tf` | Las AZ disponibles de la región |
-| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
-| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service` | La región, sin pasarla como variable a cada módulo |
+| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth`, `modules/monitoring`, `modules/audit` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
+| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service`, `modules/monitoring`, `modules/audit` | La región, sin pasarla como variable a cada módulo |
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
 | `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
 | `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |
@@ -737,6 +788,8 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
 │       ├── events/        # SNS, SQS con DLQ, Lambda del webhook y alertas
+│       ├── monitoring/    # CloudWatch: métricas del log de la API, alarmas, dashboard y consultas
+│       ├── audit/         # CloudTrail en el bucket de logs y presupuesto mensual
 │       ├── capacity/      # instancias de ECS: launch template, ASG y capacity provider
 │       └── service/       # servicio de ECS: task definition, servicio y autoscaling
 └── apps/

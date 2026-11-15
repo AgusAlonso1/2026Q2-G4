@@ -1,5 +1,5 @@
 resource "aws_kms_key" "this" {
-  description             = "${local.name_prefix}: secretos, archivo del ledger, RDS, ECR, logs, topics y colas"
+  description             = "${local.name_prefix}: secretos, archivo del ledger, RDS, ECR, logs, trail, topics y colas"
   enable_key_rotation     = true
   deletion_window_in_days = 7 # el mínimo: después de un destroy la clave no queda un mes en la cuenta
 
@@ -30,6 +30,19 @@ resource "aws_kms_key" "this" {
         Principal = { Service = ["sns.amazonaws.com", "cloudwatch.amazonaws.com"] }
         Action    = ["kms:Decrypt", "kms:GenerateDataKey*"]
         Resource  = "*"
+      },
+      {
+        # El trail de CloudTrail cifra sus logs con esta clave (modules/audit). Sólo los trails de la cuenta.
+        Sid       = "CloudTrail"
+        Effect    = "Allow"
+        Principal = { Service = "cloudtrail.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource  = "*"
+        Condition = {
+          StringLike = {
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"
+          }
+        }
       },
       {
         Sid       = "CloudWatchLogs"

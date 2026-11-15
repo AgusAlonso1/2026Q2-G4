@@ -90,3 +90,22 @@ output "waf" {
     log_group = module.waf.log_group_name
   }
 }
+
+output "monitoring" {
+  description = "Observabilidad: dashboard de CloudWatch, alarmas que avisan al topic de alertas y consultas guardadas de Logs Insights."
+  value = {
+    dashboard_url    = module.monitoring.dashboard_url
+    alarms           = module.monitoring.alarm_names
+    metric_namespace = module.monitoring.metric_namespace
+    log_queries      = module.monitoring.query_names
+  }
+}
+
+output "audit" {
+  description = "Auditoría y costos: bucket de logs y trail de CloudTrail, y el presupuesto mensual (null sin NOTIFICATION_EMAILS)."
+  value = {
+    logs_bucket = module.audit.bucket_name
+    trail_arn   = module.audit.trail_arn
+    budget      = module.audit.budget_name
+  }
+}

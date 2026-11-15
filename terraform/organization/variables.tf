@@ -15,6 +15,12 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "budget_limit_usd" {
+  description = "Presupuesto mensual en dólares. Avisa a NOTIFICATION_EMAILS al 80 % de lo gastado y cuando el pronóstico pasa el 100 %."
+  type        = number
+  default     = 50
+}
+
 variable "vpc_cidr" {
   description = "CIDR de la VPC. Las subredes se derivan de él en locals.tf."
   type        = string

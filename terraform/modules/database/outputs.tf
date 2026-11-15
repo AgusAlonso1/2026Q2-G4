@@ -16,3 +16,7 @@ output "url" {
   sensitive = true
 }
 
+output "identifier" {
+  description = "Identificador de la instancia: la dimensión DBInstanceIdentifier de sus métricas en CloudWatch."
+  value       = aws_db_instance.this.identifier
+}

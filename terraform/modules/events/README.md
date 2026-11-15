@@ -120,12 +120,16 @@ No modules.
 
 | Name | Description |
 |------|-------------|
+| <a name="output_alarm_names"></a> [alarm\_names](#output\_alarm\_names) | Alarmas de las colas: la DLQ del webhook y las de las exportaciones. |
 | <a name="output_alerts_topic_arn"></a> [alerts\_topic\_arn](#output\_alerts\_topic\_arn) | Topic de alertas de operación: las alarmas de las DLQ del webhook y de las exportaciones, y la de antigüedad de la cola de exportaciones. |
 | <a name="output_exports_dlq_url"></a> [exports\_dlq\_url](#output\_exports\_dlq\_url) | DLQ de las exportaciones (EXPORTACIONES\_DLQ\_URL): las que agotaron los reintentos y los mensajes que la cola no pudo entregar. |
 | <a name="output_exports_queue_name"></a> [exports\_queue\_name](#output\_exports\_queue\_name) | Nombre de la cola de exportaciones: la dimensión de las métricas con las que escala el exportador. |
 | <a name="output_exports_queue_url"></a> [exports\_queue\_url](#output\_exports\_queue\_url) | Cola de las exportaciones pendientes (EXPORTACIONES\_QUEUE\_URL): la API encola cada pedido y la consume el exportador. |
+| <a name="output_queue_names"></a> [queue\_names](#output\_queue\_names) | Nombres de las colas y sus DLQ: la dimensión QueueName de sus métricas en CloudWatch. |
 | <a name="output_titulares_topic_arn"></a> [titulares\_topic\_arn](#output\_titulares\_topic\_arn) | Topic de los avisos por mail a cada titular (TITULARES\_TOPIC\_ARN): cada suscripción filtra por su titular. |
 | <a name="output_topic_arn"></a> [topic\_arn](#output\_topic\_arn) | Topic donde la API publica cada orden terminada (SNS\_TOPIC\_ARN). |
 | <a name="output_webhook_dlq_url"></a> [webhook\_dlq\_url](#output\_webhook\_dlq\_url) | DLQ del webhook: los avisos que agotaron los reintentos. |
+| <a name="output_webhook_function_name"></a> [webhook\_function\_name](#output\_webhook\_function\_name) | Lambda del webhook. |
+| <a name="output_webhook_log_group_name"></a> [webhook\_log\_group\_name](#output\_webhook\_log\_group\_name) | Log group de la Lambda del webhook. |
 | <a name="output_webhook_queue_url"></a> [webhook\_queue\_url](#output\_webhook\_queue\_url) | Cola de entrega del webhook. |
 <!-- END_TF_DOCS -->

@@ -37,3 +37,33 @@ output "exports_dlq_url" {
   description = "DLQ de las exportaciones (EXPORTACIONES_DLQ_URL): las que agotaron los reintentos y los mensajes que la cola no pudo entregar."
   value       = aws_sqs_queue.exports_dlq.url
 }
+
+output "queue_names" {
+  description = "Nombres de las colas y sus DLQ: la dimensión QueueName de sus métricas en CloudWatch."
+  value = {
+    webhook     = aws_sqs_queue.webhook.name
+    webhook_dlq = aws_sqs_queue.webhook_dlq.name
+    exports     = aws_sqs_queue.exports.name
+    exports_dlq = aws_sqs_queue.exports_dlq.name
+  }
+}
+
+output "webhook_function_name" {
+  description = "Lambda del webhook."
+  value       = aws_lambda_function.this["webhook"].function_name
+}
+
+output "webhook_log_group_name" {
+  description = "Log group de la Lambda del webhook."
+  value       = aws_cloudwatch_log_group.this["webhook"].name
+}
+
+output "alarm_names" {
+  description = "Alarmas de las colas: la DLQ del webhook y las de las exportaciones."
+  value = sort([
+    aws_cloudwatch_metric_alarm.webhook_dlq.alarm_name,
+    aws_cloudwatch_metric_alarm.exports_age.alarm_name,
+    aws_cloudwatch_metric_alarm.exports_dlq.alarm_name,
+    aws_cloudwatch_metric_alarm.exports_dlq_sent.alarm_name,
+  ])
+}

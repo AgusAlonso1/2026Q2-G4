@@ -9,11 +9,23 @@ suffix="$account-$region-an"
 state="$name-tfstate-$suffix"
 # Los buckets del proyecto se crean acá y no con aws_s3_bucket: el SCP de AWS Academy niega
 # s3:GetBucketObjectLockConfiguration, y el provider lo lee cada vez que refresca un bucket.
-# Son los nombres que arman modules/storage y modules/website.
-project=("$name-$suffix" "$name-web-$suffix")
+# Son los nombres que arman modules/storage, modules/website y modules/audit.
+# El de logs lo configura modules/audit: ahí escribe CloudTrail.
+project=("$name-$suffix" "$name-web-$suffix" "$name-logs-$suffix")
 
+# 0 si el bucket existe, 1 si no existe. Cualquier otro error (credenciales vencidas, permisos)
+# corta el script: antes se tomaba como "no existe", y un destroy con la sesión del laboratorio
+# vencida terminaba bien dejando los buckets.
 exists() {
-  aws s3api head-bucket --bucket "$1" >/dev/null 2>&1
+  local salida
+  if salida=$(aws s3api head-bucket --bucket "$1" 2>&1 >/dev/null); then
+    return 0
+  fi
+  if grep -q -E '\(404\)|Not Found' <<<"$salida"; then
+    return 1
+  fi
+  echo "No se pudo consultar el bucket $1: $salida" >&2
+  exit 1
 }
 
 create() {
@@ -40,6 +52,11 @@ case "${1:-}" in
       create "$state"
       aws s3api put-bucket-versioning --bucket "$state" --versioning-configuration Status=Enabled
     fi
+    # Como los demás buckets, sólo por HTTPS: el state tiene los secretos que genera Terraform.
+    # Se aplica siempre (es idempotente) para que también la tengan los buckets creados antes.
+    aws s3api put-bucket-policy --bucket "$state" --policy "$(jq -cn --arg b "arn:aws:s3:::$state" \
+      '{Version: "2012-10-17", Statement: [{Sid: "DenyInsecureTransport", Effect: "Deny", Principal: "*",
+        Action: "s3:*", Resource: [$b, "\($b)/*"], Condition: {Bool: {"aws:SecureTransport": "false"}}}]}')"
     echo "$state"
     ;;
   create)

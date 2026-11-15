@@ -13,8 +13,19 @@ state="$name-tfstate-$suffix"
 # El de logs lo configura modules/audit: ahí escribe CloudTrail.
 project=("$name-$suffix" "$name-web-$suffix" "$name-logs-$suffix")
 
+# 0 si el bucket existe, 1 si no existe. Cualquier otro error (credenciales vencidas, permisos)
+# corta el script: antes se tomaba como "no existe", y un destroy con la sesión del laboratorio
+# vencida terminaba bien dejando los buckets.
 exists() {
-  aws s3api head-bucket --bucket "$1" >/dev/null 2>&1
+  local salida
+  if salida=$(aws s3api head-bucket --bucket "$1" 2>&1 >/dev/null); then
+    return 0
+  fi
+  if grep -q -E '\(404\)|Not Found' <<<"$salida"; then
+    return 1
+  fi
+  echo "No se pudo consultar el bucket $1: $salida" >&2
+  exit 1
 }
 
 create() {

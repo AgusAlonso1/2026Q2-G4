@@ -16,6 +16,7 @@ type CuentaDetalle struct {
 	Alias                string    `json:"alias"`
 	Tipo                 string    `json:"tipo"`
 	Activa               bool      `json:"activa"`
+	CVU                  string    `json:"cvu,omitempty"`
 	PermiteNegativo      bool      `json:"permite_negativo"`
 	SaldoCentavos        int64     `json:"saldo_centavos"`
 	LimitePorOperacion   *int64    `json:"limite_por_operacion_centavos,omitempty"`
@@ -57,12 +58,19 @@ func (c *CuentaDetalle) Publica() CuentaPublica {
 	return CuentaPublica{ID: c.ID, Alias: c.Alias, Tipo: c.Tipo, Activa: c.Activa}
 }
 
+func (s *Servicio) conCVU(c *CuentaDetalle) *CuentaDetalle {
+	if c != nil && c.Tipo != "interna" {
+		c.CVU = s.CVU(c.ID)
+	}
+	return c
+}
+
 func (s *Servicio) VerCuenta(ctx context.Context, id int64) (*CuentaDetalle, error) {
 	c, err := escanearCuenta(s.pool.QueryRow(ctx, seleccionCuenta+` WHERE c.id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apierr.NoEncontrado("no existe la cuenta %d", id)
 	}
-	return c, err
+	return s.conCVU(c), err
 }
 
 func (s *Servicio) ListarCuentas(ctx context.Context, tipo string, limite, desplazamiento int) ([]CuentaDetalle, error) {
@@ -91,7 +99,7 @@ func (s *Servicio) ListarCuentas(ctx context.Context, tipo string, limite, despl
 		if err != nil {
 			return nil, err
 		}
-		cuentas = append(cuentas, *c)
+		cuentas = append(cuentas, *s.conCVU(c))
 	}
 	return cuentas, filas.Err()
 }
@@ -145,5 +153,5 @@ func (s *Servicio) CuentaDeTitular(ctx context.Context, sub string) (*CuentaDeta
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return c, err
+	return s.conCVU(c), err
 }

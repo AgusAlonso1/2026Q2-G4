@@ -14,6 +14,7 @@ import (
 	"ledger/internal/archivado"
 	"ledger/internal/avisos"
 	"ledger/internal/cola"
+	"ledger/internal/cvu"
 	"ledger/internal/objetos"
 	"ledger/internal/pg"
 	"ledger/internal/proveedor"
@@ -65,6 +66,8 @@ type Servicio struct {
 	lector *archivado.Lector
 
 	proveedorPorDefecto string
+	entidad             string
+	billetera           string
 	notif               *webhook.Notificador
 	internas            map[string]int64
 
@@ -89,6 +92,8 @@ func Nuevo(ctx context.Context, pool *pgxpool.Pool, prov *proveedor.Cliente, obj
 		obj:                   obj,
 		lector:                archivado.NuevoLector(obj),
 		proveedorPorDefecto:   proveedorPorDefecto,
+		entidad:               EntidadPorDefecto,
+		billetera:             BilleteraPorDefecto,
 		notif:                 notif,
 		internas:              map[string]int64{},
 		internasPorID:         map[int64]bool{},
@@ -139,6 +144,32 @@ func (s *Servicio) ConAvisos(a *avisos.Avisador, appURL string) *Servicio {
 	return s
 }
 
+const (
+	EntidadPorDefecto   = "0001"
+	BilleteraPorDefecto = "nucleo"
+)
+
+func (s *Servicio) ConBilletera(nombre string) *Servicio {
+	s.billetera = nombre
+	return s
+}
+
+func (s *Servicio) Billetera() string { return s.billetera }
+
+func (s *Servicio) AliasPublico(alias string) string { return s.billetera + "." + alias }
+
+func (s *Servicio) ConEntidad(entidad string) *Servicio {
+	s.entidad = entidad
+	if s.prov != nil {
+		s.prov.ConEntidad(entidad)
+	}
+	return s
+}
+
+func (s *Servicio) Entidad() string { return s.entidad }
+
+func (s *Servicio) CVU(cuentaID int64) string { return cvu.Armar(s.entidad, cuentaID) }
+
 func (s *Servicio) interna(alias string) int64 { return s.internas[alias] }
 
 func (s *Servicio) rechazarInterna(ids ...int64) *apierr.Error {
@@ -181,6 +212,8 @@ type Orden struct {
 	OrigenID      *int64    `json:"origen_id,omitempty"`
 	DestinoID     *int64    `json:"destino_id,omitempty"`
 	CBUDestino    string    `json:"cbu_destino,omitempty"`
+	CBUOrigen     string    `json:"cbu_origen,omitempty"`
+	NombreOrigen  string    `json:"nombre_origen,omitempty"`
 	MontoCentavos int64     `json:"monto_centavos"`
 	Motivo        string    `json:"motivo,omitempty"`
 	CreadaEn      time.Time `json:"creada_en"`
@@ -188,13 +221,13 @@ type Orden struct {
 }
 
 const columnasOrden = `id, tipo::text, estado::text, coalesce(referencia, ''), origen_id,
-	destino_id, coalesce(cbu_destino, ''), monto_centavos, coalesce(motivo, ''),
-	creada_en, actualizada_en`
+	destino_id, coalesce(cbu_destino, ''), coalesce(cbu_origen, ''), coalesce(nombre_origen, ''),
+	monto_centavos, coalesce(motivo, ''), creada_en, actualizada_en`
 
 func escanearOrden(fila pgx.Row) (*Orden, error) {
 	var o Orden
 	err := fila.Scan(&o.ID, &o.Tipo, &o.Estado, &o.Referencia, &o.OrigenID, &o.DestinoID,
-		&o.CBUDestino, &o.MontoCentavos, &o.Motivo, &o.CreadaEn, &o.ActualizadaEn)
+		&o.CBUDestino, &o.CBUOrigen, &o.NombreOrigen, &o.MontoCentavos, &o.Motivo, &o.CreadaEn, &o.ActualizadaEn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apierr.NoEncontrado("no existe la orden")
 	}

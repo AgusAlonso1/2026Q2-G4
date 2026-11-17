@@ -306,7 +306,7 @@ code { font-family: var(--mono); font-size: .9em; background: var(--superficie-2
 }
 .saldo-rotulo { display: flex; align-items: center; gap: .5rem; opacity: .85; font-weight: 550; }
 .saldo-importe { font-size: clamp(2.1rem, 6vw, 2.8rem); font-weight: 750; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
-.saldo-pie { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .4rem; }
+.saldo-pie { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; margin-top: .4rem; }
 .saldo-alias {
   display: inline-flex; align-items: center; gap: .35rem;
   background: rgba(255, 255, 255, .16);
@@ -625,6 +625,10 @@ code { font-family: var(--mono); font-size: .9em; background: var(--superficie-2
   background: var(--superficie-2);
   border: 1px dashed var(--borde-fuerte);
 }
+.subtitulo-seccion { font-size: 1rem; color: var(--tenue); margin: .5rem 0 -.25rem; }
+.fila-monto .pildora { margin-left: .4rem; vertical-align: middle; }
+.codigo-cvu { font-size: clamp(.85rem, 3.6vw, 1.1rem); letter-spacing: .02em; flex-wrap: wrap; text-align: center; }
+.saldo-cvu { font-family: var(--mono); font-weight: 500; font-size: .8rem; }
 .instrucciones { list-style: none; counter-reset: paso; padding: 0; margin: 1rem 0; display: grid; gap: .8rem; }
 .instrucciones li { counter-increment: paso; display: flex; gap: .75rem; align-items: flex-start; }
 .instrucciones li::before {

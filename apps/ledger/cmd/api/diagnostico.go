@@ -42,6 +42,8 @@ func (a *API) diagnostico(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		"sesiones_habilitadas": a.sesiones.Habilitado(),
+		"cvu_entidad":          a.svc.Entidad(),
+		"billetera":            a.svc.Billetera(),
 	}
 
 	if p, err := a.svc.VerProveedor(r.Context()); err == nil {

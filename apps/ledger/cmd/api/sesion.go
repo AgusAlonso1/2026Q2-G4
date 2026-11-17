@@ -20,6 +20,7 @@ type Sesion struct {
 	Sub      string
 	CuentaID int64
 	Alias    string
+	CVU      string
 	Expira   time.Time
 }
 
@@ -38,6 +39,9 @@ func (a *API) verSesion(w http.ResponseWriter, r *http.Request) {
 	if s.CuentaID != 0 {
 		cuerpo["cuenta_id"] = s.CuentaID
 		cuerpo["alias"] = s.Alias
+		cuerpo["cvu"] = s.CVU
+		cuerpo["alias_publico"] = a.svc.AliasPublico(s.Alias)
+		cuerpo["billetera"] = a.svc.Billetera()
 	} else {
 		cuerpo["_links"] = Enlaces{"crear_cuenta": "/cuentas"}
 	}
@@ -79,7 +83,7 @@ func (a *API) conIdentidad(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if c != nil {
-			s.CuentaID, s.Alias = c.ID, c.Alias
+			s.CuentaID, s.Alias, s.CVU = c.ID, c.Alias, c.CVU
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), claveSesion{}, s)))
 	}

@@ -145,6 +145,17 @@ variable "proveedor_url" {
   default     = ""
 }
 
+variable "billetera" {
+  description = "Nombre de la billetera: prefijo de los alias en el proveedor (norte.ana). De él sale la entidad del CVU. Distinto en cada despliegue que comparta proveedor. Vacío: nucleo."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.billetera == "" || can(regex("^[a-z][a-z0-9]{1,14}$", var.billetera))
+    error_message = "Entre 2 y 15 caracteres: minúsculas y números, empezando por una letra (va como prefijo de los alias, antes del punto)."
+  }
+}
+
 variable "proveedor_api_key" {
   description = "Clave del proveedor externo. Vacía: la del mock propio."
   type        = string

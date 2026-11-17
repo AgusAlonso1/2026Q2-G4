@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"ledger/internal/apierr"
+	"ledger/internal/cvu"
 	"ledger/internal/pg"
 	"ledger/internal/proveedor"
 )
@@ -97,6 +98,24 @@ func (s *Servicio) SimularDeposito(ctx context.Context, ordenID int64) (*Orden, 
 	return s.ConsultarIngreso(ctx, ordenID)
 }
 
+func (s *Servicio) ConciliarSiempre(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := s.PublicarAlias(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("no se pudieron publicar los alias en el proveedor", "error", err)
+			}
+			if _, err := s.Conciliar(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("conciliacion periodica fallida", "error", err)
+			}
+		}
+	}
+}
+
 func (s *Servicio) conciliarAhora(ctx context.Context) (ResumenConciliacion, error) {
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE conciliacion SET ultima_consulta = NULL WHERE id = 1`); err != nil {
@@ -157,18 +176,25 @@ func (s *Servicio) Conciliar(ctx context.Context) (ResumenConciliacion, error) {
 		return res, err
 	}
 
-	clave := fmt.Sprintf("conciliacion/%s/%s.json",
-		time.Now().UTC().Format("2006/01/02"), nuevaReferencia("CON"))
-	if uri, err := s.obj.Guardar(ctx, clave, crudo, "application/json"); err != nil {
-		return res, fmt.Errorf("guardar evidencia de conciliacion: %w", err)
-	} else {
+	if len(movs) > 0 {
+		clave := fmt.Sprintf("conciliacion/%s/%s.json",
+			time.Now().UTC().Format("2006/01/02"), nuevaReferencia("CON"))
+		uri, err := s.obj.Guardar(ctx, clave, crudo, "application/json")
+		if err != nil {
+			return res, fmt.Errorf("guardar evidencia de conciliacion: %w", err)
+		}
 		res.Evidencia = uri
 	}
 
 	for _, m := range movs {
-		atribuido, err := s.atribuir(ctx, m)
+		atribuido, acreditada, err := s.atribuir(ctx, m)
 		if err != nil {
 			return res, err
+		}
+		if acreditada != 0 {
+			if o, err := leerOrden(ctx, s.pool, acreditada); err == nil {
+				s.avisar(o)
+			}
 		}
 		res.Movimientos++
 		if atribuido {
@@ -197,21 +223,23 @@ func (s *Servicio) proveedorVigente(ctx context.Context) (string, error) {
 	return p.URL, nil
 }
 
-func (s *Servicio) atribuir(ctx context.Context, m proveedor.Movimiento) (bool, error) {
+func (s *Servicio) atribuir(ctx context.Context, m proveedor.Movimiento) (atribuido bool, acreditada int64, err error) {
 	compensacion := s.interna(AliasCompensacion)
 	transitoria := s.interna(AliasTransitoriaIngresos)
 	periodo := pg.InicioDeMes(time.Now())
 
-	var atribuido bool
-	err := pg.EnTx(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pg.EnTx(ctx, s.pool, func(tx pgx.Tx) error {
+		atribuido, acreditada = false, 0
 
 		var movID int64
 		err := tx.QueryRow(ctx, `
-			INSERT INTO movimientos_banco (id_origen, referencia, monto_centavos, ocurrido_en)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO movimientos_banco (id_origen, referencia, monto_centavos, ocurrido_en,
+			                               cvu_destino, cbu_origen)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (id_origen) DO NOTHING
 			RETURNING id`,
-			m.IDOrigen, nuloSiVacio(m.Referencia), m.MontoCentavos, m.OcurridoEn).Scan(&movID)
+			m.IDOrigen, nuloSiVacio(m.Referencia), m.MontoCentavos, m.OcurridoEn,
+			nuloSiVacio(m.CVUDestino), nuloSiVacio(m.CBUOrigen)).Scan(&movID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -255,12 +283,28 @@ func (s *Servicio) atribuir(ctx context.Context, m proveedor.Movimiento) (bool, 
 			if _, err := transicionar(ctx, tx, orden.ID, EstadoPendiente, EstadoNoAtribuida, motivo); err != nil {
 				return err
 			}
+		} else if m.CVUDestino != "" {
+			destino, problema, err := s.cuentaDelCVU(ctx, tx, m.CVUDestino)
+			if err != nil {
+				return err
+			}
+			motivo = problema
+			if destino != 0 {
+				id, err := s.acreditarEnCVU(ctx, tx, periodo, movID, destino, m)
+				if err != nil {
+					return err
+				}
+				atribuido, acreditada = true, id
+				return nil
+			}
 		}
 
 		huerfana, err := insertarOrden(ctx, tx, nuevaOrden{
 			Tipo:           TipoIngreso,
 			IdempotencyKey: "mov:" + m.IDOrigen,
 			DestinoID:      &transitoria,
+			CBUOrigen:      m.CBUOrigen,
+			NombreOrigen:   m.NombreOrigen,
 			MontoCentavos:  m.MontoCentavos,
 			Estado:         EstadoPendiente,
 		})
@@ -281,9 +325,66 @@ func (s *Servicio) atribuir(ctx context.Context, m proveedor.Movimiento) (bool, 
 	})
 	if errors.Is(err, errReintento) {
 
-		return false, nil
+		return false, 0, nil
 	}
-	return atribuido, err
+	return atribuido, acreditada, err
+}
+
+func (s *Servicio) cuentaDelCVU(ctx context.Context, tx pgx.Tx, clave string) (int64, string, error) {
+	entidad, id, ok := cvu.Partes(clave)
+	if !ok || entidad != s.entidad {
+		return 0, fmt.Sprintf("el CVU %s no es de esta entidad (%s)", clave, s.entidad), nil
+	}
+	var activa bool
+	err := tx.QueryRow(ctx, `SELECT activa FROM cuentas WHERE id = $1 AND tipo <> 'interna'`, id).Scan(&activa)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Sprintf("el CVU %s no corresponde a ninguna cuenta", clave), nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	if !activa {
+		return 0, fmt.Sprintf("la cuenta del CVU %s esta inactiva", clave), nil
+	}
+	return id, "", nil
+}
+
+func (s *Servicio) acreditarEnCVU(ctx context.Context, tx pgx.Tx, periodo time.Time, movID, destino int64, m proveedor.Movimiento) (int64, error) {
+	compensacion := s.interna(AliasCompensacion)
+	transitoria := s.interna(AliasTransitoriaIngresos)
+
+	id, err := insertarOrden(ctx, tx, nuevaOrden{
+		Tipo:           TipoIngreso,
+		IdempotencyKey: "mov:" + m.IDOrigen,
+		Referencia:     nuevaReferencia("ING"),
+		DestinoID:      &destino,
+		CBUOrigen:      m.CBUOrigen,
+		NombreOrigen:   m.NombreOrigen,
+		MontoCentavos:  m.MontoCentavos,
+		Estado:         EstadoPendiente,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if _, err := bloquearSaldos(ctx, tx, compensacion, transitoria, destino); err != nil {
+		return 0, err
+	}
+	if err := asentarPar(ctx, tx, periodo, id, compensacion, transitoria, m.MontoCentavos, TramoIngresoBanco); err != nil {
+		return 0, err
+	}
+	if err := asentarPar(ctx, tx, periodo, id, transitoria, destino, m.MontoCentavos, TramoIngresoAcreditacion); err != nil {
+		return 0, err
+	}
+	motivo := "transferencia al CVU"
+	if m.Referencia != "" {
+		motivo = "transferencia " + m.Referencia
+	}
+	if _, err := transicionar(ctx, tx, id, EstadoPendiente, EstadoAtribuida, motivo); err != nil {
+		return 0, err
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE movimientos_banco SET orden_id = $1, atribuido = TRUE WHERE id = $2`, id, movID)
+	return id, err
 }
 
 func buscarIntencion(ctx context.Context, c pg.Consultador, referencia string) (*Orden, error) {

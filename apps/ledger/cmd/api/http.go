@@ -93,6 +93,11 @@ func registrar(a *API) http.Handler {
 	mux.HandleFunc("POST /transferencias", a.conSesion(a.transferir))
 	mux.HandleFunc("GET /transferencias/{id}", a.conSesion(a.verTransferencia))
 
+	mux.HandleFunc("GET /destinos/{clave}", a.conSesion(a.buscarDestino))
+	mux.HandleFunc("POST /solicitudes", a.conSesion(a.pedirDinero))
+	mux.HandleFunc("GET /cuentas/{id}/solicitudes", a.conSesion(a.listarSolicitudes))
+	mux.HandleFunc("POST /solicitudes/{referencia}/aceptar", a.conSesion(a.aceptarSolicitud))
+	mux.HandleFunc("POST /solicitudes/{referencia}/rechazar", a.conSesion(a.rechazarSolicitud))
 	mux.HandleFunc("POST /egresos", a.conSesion(a.egresar))
 	mux.HandleFunc("GET /egresos/{id}", a.conSesion(a.verEgreso))
 
@@ -321,6 +326,79 @@ func (a *API) egresar(w http.ResponseWriter, r *http.Request) {
 
 	o, err := a.svc.Egresar(r.Context(), e)
 	responderOrden(w, o, err)
+}
+
+func (a *API) buscarDestino(w http.ResponseWriter, r *http.Request) {
+	d, err := a.svc.BuscarDestino(r.Context(), r.PathValue("clave"), titular(r))
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	apierr.Escribir(w, http.StatusOK, d)
+}
+
+func (a *API) pedirDinero(w http.ResponseWriter, r *http.Request) {
+	clave, ok := claveIdempotencia(w, r)
+	if !ok {
+		return
+	}
+	var e ledger.EntradaSolicitud
+	if !leerJSON(w, r, &e) {
+		return
+	}
+	e.IdempotencyKey = clave
+	if !a.exigirTitular(w, r, e.DestinoID) {
+		return
+	}
+	x, err := a.svc.PedirDinero(r.Context(), e)
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	apierr.Escribir(w, http.StatusCreated, x)
+}
+
+func (a *API) listarSolicitudes(w http.ResponseWriter, r *http.Request) {
+	id, ok := idDeRuta(w, r)
+	if !ok || !a.exigirTitular(w, r, id) {
+		return
+	}
+	lista, err := a.svc.Solicitudes(r.Context(), id, r.URL.Query().Get("rol"))
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	apierr.Escribir(w, http.StatusOK, map[string]any{"solicitudes": lista})
+}
+
+type pedidoSolicitud struct {
+	CuentaID int64 `json:"cuenta_id"`
+}
+
+func (a *API) aceptarSolicitud(w http.ResponseWriter, r *http.Request) {
+	var p pedidoSolicitud
+	if !leerJSON(w, r, &p) || !a.exigirTitular(w, r, p.CuentaID) {
+		return
+	}
+	pago, err := a.svc.AceptarSolicitud(r.Context(), p.CuentaID, r.PathValue("referencia"))
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	apierr.Escribir(w, http.StatusOK, pago)
+}
+
+func (a *API) rechazarSolicitud(w http.ResponseWriter, r *http.Request) {
+	var p pedidoSolicitud
+	if !leerJSON(w, r, &p) || !a.exigirTitular(w, r, p.CuentaID) {
+		return
+	}
+	x, err := a.svc.RechazarSolicitud(r.Context(), p.CuentaID, r.PathValue("referencia"))
+	if err != nil {
+		apierr.EscribirError(w, err)
+		return
+	}
+	apierr.Escribir(w, http.StatusOK, x)
 }
 
 func (a *API) verEgreso(w http.ResponseWriter, r *http.Request) {

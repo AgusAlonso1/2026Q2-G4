@@ -24,7 +24,9 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 4. La API valida el token contra Cognito y liquida cada operación en RDS PostgreSQL Multi-AZ, en
    las subredes de `data`.
 5. Los ingresos y egresos hacia el exterior van al proveedor por el NAT. Por defecto es el
-   proveedor simulado que trae la propia API en `/servicio-mock`.
+   proveedor simulado que trae la propia API en `/servicio-mock`. La API le pide al proveedor
+   cada 5 segundos los créditos de su entidad y los concilia: así se acreditan los ingresos, y
+   también un retiro hecho al CVU de una cuenta de núcleo, de este despliegue o de otro.
 6. Cuando una orden termina, la API publica un evento en el topic SNS `ledger-events` por el
    interface endpoint de SNS. El topic lo deja en la cola SQS `ledger-webhook`, y una Lambda lo
    firma y lo manda a `webhook_url`. Lo que agota los reintentos queda en una DLQ, cuya alarma
@@ -127,6 +129,8 @@ dos conexiones posibles con otro despliegue, independientes entre sí:
 
 - **Proveedor.** Un equipo manda sus ingresos y egresos al `/servicio-mock` del otro, en vez de
   al suyo. El que hace de proveedor no cambia nada de su lado; sólo comparte su clave del mock.
+  Con el mismo banco, las cuentas de un despliegue le pueden transferir a las del otro (ver
+  [Transferir entre los dos despliegues](#transferir-entre-los-dos-despliegues)).
 - **Webhook.** Cada vez que una orden termina, la API publica un evento en SNS y una Lambda le
   manda un aviso firmado (cabecera `X-Ledger-Signature`) a `<api_url del otro>/webhooks/recibidos`. El que recibe verifica la
   firma con el mismo secreto, y el aviso aparece en su pestaña *Operación*.
@@ -141,6 +145,7 @@ los pasan a Terraform como `TF_VAR_*`:
 | `PROVEEDOR_API_KEY` | Secrets | La clave del proveedor al que llamo: el `MOCK_API_KEY` del otro | La de mi propio mock |
 | `WEBHOOK_URL` | Variables | Adónde la Lambda del webhook avisa **mis** órdenes terminadas: `<api_url del otro>/webhooks/recibidos` | La Lambda descarta los avisos |
 | `WEBHOOK_SECRET` | Secrets | Con qué firmo los avisos que mando y verifico los que recibo. Tiene que ser igual en los dos despliegues | Se genera uno |
+| `BILLETERA` | Variables | El nombre de **mi** billetera: el prefijo de los alias de mis cuentas (`norte.ana`). Tiene que ser distinto del del otro despliegue | `nucleo` |
 
 Por ejemplo, si el equipo B usa al equipo A de proveedor y los dos se avisan las órdenes:
 
@@ -157,7 +162,8 @@ que el orden es:
 
 1. Acordar antes `MOCK_API_KEY` y `WEBHOOK_SECRET` (por ejemplo, con `openssl rand -hex 32`) y
    cargarlos en los dos repositorios. Fijarlos evita que cambien al destruir y volver a
-   desplegar.
+   desplegar. Cada uno elige además su `BILLETERA`, distinta de la del otro: si los dos la
+   dejan vacía quedan los dos como `nucleo` y el proveedor no los puede distinguir.
 2. Los dos corren **Deploy** sin URL y se pasan la `api_url` que queda en el resumen del run.
 3. Cada uno carga `PROVEEDOR_URL` y/o `WEBHOOK_URL` con la `api_url` del otro y vuelve a correr
    **Deploy**. Este segundo Deploy no toca el NLB, así que la `api_url` no cambia. La
@@ -170,6 +176,36 @@ hasta *Volver al de siempre*. La clave no se cambia ahí: sale siempre de `PROVE
 Para comprobar que las claves coinciden sin mostrarlas, `GET /admin/diagnostico` (la tarjeta de
 diagnóstico de *Operación*) muestra una huella de cada una: la de `mock_api_key` de A tiene que
 ser igual a la de `proveedor_api_key` de B, y la de `webhook_secret`, igual en los dos.
+
+##### Transferir entre los dos despliegues
+
+Cada cuenta tiene un CVU, que se ve en *Inicio* y en *Ingresar*: `000`, la entidad del
+despliegue (4 dígitos que la API saca de un SHA-256 del nombre de la billetera), un dígito
+verificador, el número de cuenta en 13 dígitos y otro verificador. La web y la API rechazan un CVU o una CBU con los
+verificadores mal, antes de mover plata.
+
+Cada despliegue publica además en el proveedor el alias y el CVU de sus cuentas, con el
+nombre de su billetera (`BILLETERA`) como prefijo: `ana` en la billetera `norte` es
+`norte.ana` para todos. Así un alias es único aunque los dos despliegues tengan una cuenta `ana`.
+El proveedor rechaza un nombre de billetera que ya usa otro despliegue, y también uno que da
+la misma entidad que otro (pasa una vez cada 10.000 pares de nombres): ahí hay que elegir otro
+nombre, y el error queda en el log de la API. En *Retirar* alcanza
+con escribir `sur.beto`; dentro de la misma billetera, también `beto` a secas. Antes de
+confirmar, la web muestra a quién le llega y de qué billetera es.
+
+Un retiro a un CVU va al proveedor, que además de acreditarlo registra el crédito para la
+entidad dueña del CVU, con el alias y el CVU de quien pagó. La API de cada despliegue le pide
+al proveedor sólo los créditos de su entidad y los acredita en la cuenta de ese CVU. Si los dos
+despliegues usan el mismo proveedor (`PROVEEDOR_URL` de B apuntando al mock de A), un retiro
+desde B al alias o al CVU de una cuenta de A le aparece a esa cuenta en *Inicio* unos segundos
+después, como "Transferencia de @alias", y al revés. Sin conectar nada, pasa lo mismo entre dos cuentas
+del mismo despliegue. Un CVU que no es de ninguna cuenta queda como movimiento no atribuido en
+la conciliación del que lo recibe.
+
+Al revés, desde *Ingresar* una cuenta le puede **pedir** plata a otra (`POST /solicitudes`): el
+pedido queda en el proveedor y le aparece a quien tiene que pagar en su *Inicio*, con *Pagar* y
+*Rechazar*. Pagar es un retiro de su cuenta al CVU del que pidió, por el mismo camino de arriba,
+y el pedido queda `aceptada`. Sin la aprobación del que paga no sale plata.
 
 Desde una máquina local, los mismos valores van en `terraform/organization/terraform.tfvars`
 o como variables de entorno `TF_VAR_*` antes de `make plan`. El resto de las variables (tipos de
@@ -698,6 +734,7 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 | `sort`, `keys` | `modules/service/main.tf` | Las variables de entorno en orden fijo: el plan no muestra cambios espurios |
 | `join`, `keys` | `modules/service/main.tf` | Arma la suma de las métricas de la cola en la alarma que baja el exportador |
 | `alltrue`, `contains` | `organization/variables.tf` | Valida que el archivador vaya de 0 a 1 tarea |
+| `can`, `regex` | `organization/variables.tf` | Valida el formato de `project_name` y de `billetera` |
 | `contains` | `modules/auth/variables.tf`, `modules/service/variables.tf` | Valida que la retención de los logs sea una que acepta CloudWatch |
 | `can`, `regex`, `endswith` | `modules/analytics/variables.tf` | Valida que `history_start` sea un mes `AAAA-MM` y que los prefijos terminen en `/` |
 | `jsonencode`, `concat` | `modules/monitoring/main.tf` | El cuerpo del dashboard, armando cada panel desde una lista en `locals` |
@@ -731,8 +768,8 @@ sobre `local.services`; ver [Cómputo](ARCHITECTURE.md#3-cómputo).
 
 ### Validación de variables
 
-Los bloques `validation` comprueban los valores de entrada: limitan `archive_schedule` a 0 o 1
-tarea, `log_retention_days` a los valores que admite CloudWatch, `target_capacity` al rango de
+Los bloques `validation` comprueban los valores de entrada: el formato de `project_name` y de
+`billetera` (que va como prefijo de los alias), limitan `archive_schedule` a 0 o 1 tarea, `log_retention_days` a los valores que admite CloudWatch, `target_capacity` al rango de
 1 a 100, que el bloque de un Parquet del archivo no tenga más filas que la parte
 (`archive_rows_per_row_group` ≤ `archive_rows_per_part`, una validación que cruza dos variables)
 y, en Athena, el formato de `history_start`, los prefijos y el tope de bytes escaneados (Athena

@@ -95,11 +95,14 @@ export async function inicio(hoja, ir) {
   pintarOjo();
 
   const alias = estado.cuenta?.alias || '';
+  const aliasPublico = estado.cuenta?.aliasPublico || alias;
+  const cvu = estado.cuenta?.cvu || '';
   const saldo = el('section', { clase: 'saldo' },
     el('div', { clase: 'saldo-rotulo' }, icono('billetera', 18), 'Dinero disponible', ojo),
     importe,
     el('div', { clase: 'saldo-pie' },
-      el('span', { clase: 'saldo-alias' }, `@${alias}`, botonCopiar(alias, 'Copiar tu alias'))));
+      el('span', { clase: 'saldo-alias' }, `@${aliasPublico}`, botonCopiar(aliasPublico, 'Copiar tu alias')),
+      cvu ? el('span', { clase: 'saldo-alias saldo-cvu' }, `CVU ${cbuVisible(cvu)}`, botonCopiar(cvu, 'Copiar tu CVU')) : null));
 
   const acciones = el('section', { clase: 'acciones' },
     accion('enviar', 'Enviar', () => ir('#/enviar')),
@@ -114,21 +117,84 @@ export async function inicio(hoja, ir) {
       el('button', { clase: 'enlace', texto: 'Ver todo', onclick: () => ir('#/actividad') })),
     lista);
 
+  const pedidos = el('section', { clase: 'tarjeta', hidden: true });
+
   hoja.append(
     el('div', {}, el('p', { clase: 'encabezado-sub', texto: saludo() }), el('h1', { texto: `Hola, ${alias}` })),
-    saldo, acciones, recientes);
+    saldo, pedidos, acciones, recientes);
 
-  const [v, movs] = await Promise.all([
-    saldoActual(),
-    exigir('GET', `/cuentas/${cuentaID()}/movimientos?limite=6`),
-  ]);
-  valor = v;
+  const pintarRecientes = async () => {
+    const movs = await exigir('GET', `/cuentas/${cuentaID()}/movimientos?limite=6`);
+    const contactos = await agenda(contrapartes(movs.movimientos));
+    pintarMovimientos(lista, consolidar(movs.movimientos).slice(0, 5), contactos, ir, {
+      vacio: vacio('actividad', 'Todavía no hay movimientos', 'Cuando envíes, recibas o ingreses plata, lo vas a ver acá.',
+        el('button', { clase: 'boton boton-primario', texto: 'Ingresar dinero', onclick: () => ir('#/ingresar') })),
+    });
+  };
+
+  const actualizarSaldo = async () => {
+    const nuevo = await saldoActual();
+    if (nuevo === valor || !lista.isConnected) return;
+    if (valor !== null && nuevo > valor) avisar(`Entraron ${enPesos(nuevo - valor)} a tu cuenta`);
+    valor = nuevo;
+    pintarImporte();
+    await pintarRecientes();
+  };
+
+  // Las solicitudes viven en el banco: si no responde, el inicio sigue sin ellas.
+  let firmaPedidos = '';
+  const pintarPedidos = async (forzar = false) => {
+    const r = await pedir('GET', `/cuentas/${cuentaID()}/solicitudes?rol=recibidas`);
+    const recibidas = r.ok ? r.datos.solicitudes || [] : [];
+    const firma = recibidas.map((x) => x.referencia).join();
+    if (!lista.isConnected || (firma === firmaPedidos && !forzar)) return;
+    firmaPedidos = firma;
+    pedidos.hidden = !recibidas.length;
+    pedidos.replaceChildren(
+      el('div', { clase: 'cabecera-tarjeta' }, el('h2', { texto: 'Te piden plata' })),
+      el('div', { clase: 'lista' }, ...recibidas.map((x) => filaPedido(x, async () => {
+        await Promise.all([actualizarSaldo(), pintarPedidos(true)]);
+      }))));
+  };
+
+  [valor] = await Promise.all([saldoActual(), pintarRecientes(), pintarPedidos()]);
   pintarImporte();
-  const contactos = await agenda(contrapartes(movs.movimientos));
-  pintarMovimientos(lista, consolidar(movs.movimientos).slice(0, 5), contactos, ir, {
-    vacio: vacio('actividad', 'Todavía no hay movimientos', 'Cuando envíes, recibas o ingreses plata, lo vas a ver acá.',
-      el('button', { clase: 'boton boton-primario', texto: 'Ingresar dinero', onclick: () => ir('#/ingresar') })),
-  });
+
+  // Lo que llega a tu CVU lo acredita la conciliación en segundo plano: el inicio lo muestra solo.
+  const refrescar = async () => {
+    if (!lista.isConnected) return;
+    if (!document.hidden) {
+      try {
+        await Promise.all([actualizarSaldo(), pintarPedidos()]);
+      } catch { /* se reintenta en la próxima vuelta */ }
+    }
+    setTimeout(refrescar, 3000);
+  };
+  setTimeout(refrescar, 3000);
+}
+
+function filaPedido(x, despues) {
+  const quien = x.alias_cobrador ? `@${x.alias_cobrador}` : `la cuenta ${cbuVisible(x.cvu_cobrador)}`;
+  const aceptar = el('button', { clase: 'boton boton-primario boton-chico', texto: 'Pagar' });
+  const rechazar = el('button', { clase: 'boton boton-fantasma boton-chico', texto: 'Rechazar' });
+  const responder = (accion) => async () => {
+    aceptar.disabled = true;
+    rechazar.disabled = true;
+    const r = await pedir('POST', `/solicitudes/${encodeURIComponent(x.referencia)}/${accion}`, { cuerpo: { cuenta_id: cuentaID() } });
+    if (r.codigo === 0 && r.datos?.codigo === 'sesion_vencida') return;
+    if (!r.ok) avisar(mensajeDeError(r), true);
+    else if (accion === 'aceptar') avisar(`Le pagaste ${enPesos(x.monto_centavos)} a ${quien}`);
+    else avisar(`Rechazaste el pedido de ${quien}`);
+    await despues();
+  };
+  aceptar.addEventListener('click', responder('aceptar'));
+  rechazar.addEventListener('click', responder('rechazar'));
+  return el('div', { clase: 'fila fila-fija' },
+    avatar(x.alias_cobrador || '?'),
+    el('span', { clase: 'fila-texto' },
+      el('div', { clase: 'fila-titulo', texto: `${quien} te pide ${enPesos(x.monto_centavos)}` }),
+      el('div', { clase: 'fila-sub', texto: cuando(x.creada_en) })),
+    el('span', { clase: 'fila-botones' }, rechazar, aceptar));
 }
 
 function saludo() {
@@ -276,7 +342,7 @@ function filaMovimiento(m, contactos, ir, soloHora) {
 function tituloMovimiento(m, tipo, entra, otra) {
   if (anulada(m)) return tipo === 'egreso' ? 'Retiro rechazado' : 'Operación anulada';
   if (tipo === 'egreso') return entra ? 'Retiro devuelto' : 'Retiro a cuenta bancaria';
-  if (tipo === 'ingreso') return 'Ingreso desde tu banco';
+  if (tipo === 'ingreso') return m.nombre_origen ? `Transferencia de @${m.nombre_origen}` : 'Ingreso desde tu banco';
   if (!otra || otra.tipo === 'interna') return entra ? 'Saldo de bienvenida' : 'Ajuste';
   return `@${otra.alias}`;
 }
@@ -284,7 +350,7 @@ function tituloMovimiento(m, tipo, entra, otra) {
 function subtituloMovimiento(m, tipo, entra) {
   if (anulada(m)) return 'Te devolvimos el dinero';
   if (tipo === 'egreso') return entra ? 'Devolución' : 'Retiro';
-  if (tipo === 'ingreso') return 'Ingreso';
+  if (tipo === 'ingreso') return m.nombre_origen ? 'Recibiste' : 'Ingreso';
   return entra ? 'Recibiste' : 'Enviaste';
 }
 
@@ -548,21 +614,71 @@ function chips(entrada, alCambiar, extra = []) {
 const soloDigitos = (t) => String(t || '').replace(/\D/g, '');
 const cbuVisible = (cbu) => cbu.replace(/(\d{4})(?=\d)/g, '$1 ');
 
+// Los mismos dígitos verificadores que controla el banco: un error de tipeo se ve antes de enviar.
+const verificador = (numeros, pesos) =>
+  (10 - (pesos.reduce((suma, peso, i) => suma + Number(numeros[i]) * peso, 0) % 10)) % 10;
+const cbuValida = (c) => c.length === 22
+  && Number(c[7]) === verificador(c.slice(0, 7), [7, 1, 3, 9, 7, 1, 3])
+  && Number(c[21]) === verificador(c.slice(8, 21), [3, 9, 7, 1, 3, 9, 7, 1, 3, 9, 7, 1, 3]);
+const entidadDe = (c) => (c.startsWith('000') ? c.slice(3, 7) : '');
+
+function problemaDeCbu(digitos) {
+  if (!digitos) return '';
+  if (digitos.length !== 22) return `Tiene ${digitos.length} números: una CBU o CVU tiene 22`;
+  if (!cbuValida(digitos)) return 'Los números no cierran: revisá que esté bien copiada';
+  if (digitos === estado.cuenta?.cvu) return 'Es el CVU de tu propia cuenta';
+  return '';
+}
+
+const esNumero = (t) => /^[\d\s]+$/.test(t.trim());
+const sinArroba = (t) => t.trim().replace(/^@/, '');
+const AYUDA_DESTINO = 'Un alias como billetera.nombre, o los 22 números de una CBU o un CVU.';
+
+function problemaDeDestino(texto) {
+  if (!texto.trim()) return '';
+  if (esNumero(texto)) return problemaDeCbu(soloDigitos(texto));
+  if (!/^[a-z0-9._-]+$/.test(sinArroba(texto))) return 'Un alias tiene letras minúsculas, números, punto, guion o guion bajo';
+  if ([estado.cuenta?.alias, estado.cuenta?.aliasPublico].includes(sinArroba(texto))) return 'Es tu propio alias';
+  return '';
+}
+
+function formatearDestino(campo) {
+  if (esNumero(campo.value)) {
+    const pos = campo.value.length;
+    campo.value = cbuVisible(soloDigitos(campo.value).slice(0, 22));
+    if (pos >= campo.value.length) campo.setSelectionRange(campo.value.length, campo.value.length);
+  } else if (campo.value !== campo.value.toLowerCase()) {
+    campo.value = campo.value.toLowerCase();
+  }
+}
+
+const claveDeDestino = (texto) => (esNumero(texto) ? soloDigitos(texto) : sinArroba(texto));
+
+const destinoCompleto = (texto) => (esNumero(texto) ? soloDigitos(texto).length === 22 : sinArroba(texto).length >= 3);
+
+function ayudaDeCbu(digitos) {
+  if (digitos.length !== 22 || !entidadDe(digitos)) return AYUDA_DESTINO;
+  return entidadDe(digitos) === entidadDe(estado.cuenta?.cvu || '')
+    ? 'Es un CVU de núcleo: le llega en unos segundos.'
+    : `Es un CVU de otra billetera (entidad ${entidadDe(digitos)}).`;
+}
+
 export async function retirar(hoja, ir) {
   const tarjeta = el('section', { clase: 'tarjeta' }, esqueleto(3));
-  hoja.append(encabezado('Retirar a tu banco', 'Pasá plata de núcleo a cualquier cuenta bancaria o virtual.'), tarjeta);
+  hoja.append(encabezado('Retirar o transferir', 'Pasá plata a un alias de núcleo o a cualquier CBU o CVU.'), tarjeta);
 
   const disponible = await saldoActual();
   const claveRetiro = claveDeIntento('retiro');
-  let cbu = '';
+  let texto = '';
+  let destino = null;
   let centavos = null;
 
   const paso1 = () => {
-    const campoCbu = el('input', {
-      inputMode: 'numeric', autocomplete: 'off', placeholder: '0000 0031 0001 0000 0000 01',
-      'aria-describedby': 'cbu-ayuda', value: cbuVisible(cbu), maxLength: 27,
+    const campoDestino = el('input', {
+      autocomplete: 'off', autocapitalize: 'none', spellcheck: false, placeholder: 'ana.perez o 0000 0000 0000 …',
+      'aria-describedby': 'destino-ayuda', value: texto, maxLength: 31,
     });
-    const ayudaCbu = el('span', { clase: 'campo-ayuda', id: 'cbu-ayuda', texto: 'Los 22 números de la CBU o CVU de destino.' });
+    const ayudaDestino = el('span', { clase: 'campo-ayuda', id: 'destino-ayuda', texto: AYUDA_DESTINO });
     const entrada = el('input', {
       clase: 'importe-entrada', inputMode: 'decimal', placeholder: '$ 0', autocomplete: 'off',
       'aria-label': 'Monto', value: centavos ? String(centavos / 100).replace('.', ',') : '',
@@ -570,12 +686,15 @@ export async function retirar(hoja, ir) {
     const problema = el('p', { clase: 'campo-error', hidden: true, role: 'alert' });
     const continuar = el('button', { clase: 'boton boton-primario boton-ancho boton-grande', type: 'submit', texto: 'Continuar' });
 
+    const marcar = (error, ayuda) => {
+      campoDestino.setAttribute('aria-invalid', String(Boolean(error)));
+      ayudaDestino.textContent = error || ayuda;
+      ayudaDestino.className = error ? 'campo-error' : 'campo-ayuda';
+    };
+
     const validar = () => {
-      const digitos = soloDigitos(campoCbu.value);
-      const errorCbu = digitos && digitos.length !== 22 ? `Tiene ${digitos.length} números: una CBU o CVU tiene 22` : '';
-      campoCbu.setAttribute('aria-invalid', String(Boolean(errorCbu)));
-      ayudaCbu.textContent = errorCbu || 'Los 22 números de la CBU o CVU de destino.';
-      ayudaCbu.className = errorCbu ? 'campo-error' : 'campo-ayuda';
+      const errorDestino = problemaDeDestino(campoDestino.value);
+      marcar(errorDestino, esNumero(campoDestino.value) ? ayudaDeCbu(soloDigitos(campoDestino.value)) : AYUDA_DESTINO);
 
       const c = aCentavos(entrada.value);
       let error = '';
@@ -584,15 +703,11 @@ export async function retirar(hoja, ir) {
       else if (c !== null && c > disponible) error = `No te alcanza: tenés ${enPesos(disponible)} disponibles`;
       problema.textContent = error;
       problema.hidden = !error;
-      continuar.disabled = Boolean(error || errorCbu) || c === null || digitos.length !== 22;
-      return { c, digitos };
+      const listo = !error && !errorDestino && c !== null && destinoCompleto(campoDestino.value);
+      continuar.disabled = !listo;
+      return { c, listo };
     };
-    campoCbu.addEventListener('input', () => {
-      const pos = campoCbu.value.length;
-      campoCbu.value = cbuVisible(soloDigitos(campoCbu.value).slice(0, 22));
-      if (pos >= campoCbu.value.length) campoCbu.setSelectionRange(campoCbu.value.length, campoCbu.value.length);
-      validar();
-    });
+    campoDestino.addEventListener('input', () => { formatearDestino(campoDestino); validar(); });
     entrada.addEventListener('input', validar);
 
     const todo = el('button', {
@@ -601,38 +716,63 @@ export async function retirar(hoja, ir) {
     });
 
     const form = el('form', { novalidate: true, style: 'display:grid;gap:1rem' },
-      el('label', { clase: 'campo' }, el('span', { clase: 'campo-rotulo', texto: 'CBU o CVU de destino' }), campoCbu, ayudaCbu),
+      el('label', { clase: 'campo' }, el('span', { clase: 'campo-rotulo', texto: 'Alias, CBU o CVU de destino' }), campoDestino, ayudaDestino),
       el('div', { clase: 'importe-campo' },
         entrada,
         el('p', { clase: 'importe-pie' }, 'Disponible: ', el('strong', { texto: enPesos(disponible) })),
         chips(entrada, validar, [todo])),
       problema, continuar);
-    form.addEventListener('submit', (ev) => {
+    form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
-      const { c, digitos } = validar();
-      if (c && c > 0 && c <= disponible && digitos.length === 22) { cbu = digitos; centavos = c; paso2(); }
+      const { c, listo } = validar();
+      if (!listo) return;
+      const clave = claveDeDestino(campoDestino.value);
+      continuar.disabled = true;
+      continuar.textContent = 'Buscando…';
+      try {
+        const r = await pedir('GET', `/destinos/${encodeURIComponent(clave)}`);
+        if (r.codigo === 0 && r.datos?.codigo === 'sesion_vencida') return;
+        if (!r.ok) {
+          marcar(r.codigo === 404 ? `No encontramos ninguna cuenta con el alias @${clave}` : mensajeDeError(r), '');
+          return;
+        }
+        texto = campoDestino.value;
+        destino = r.datos;
+        centavos = c;
+        paso2();
+      } catch (err) {
+        marcar(err.message, '');
+      } finally {
+        continuar.textContent = 'Continuar';
+        if (continuar.isConnected) continuar.disabled = false;
+      }
     });
     tarjeta.replaceChildren(pasos(2, 1), form);
     validar();
-    (cbu ? entrada : campoCbu).focus();
+    (texto ? entrada : campoDestino).focus();
   };
 
   const paso2 = () => {
+    const nombre = destino.alias ? `@${destino.alias}` : '';
+    const donde = destino.misma_entidad ? `Tu billetera (${destino.billetera || estado.cuenta?.billetera})`
+      : destino.billetera ? `Billetera ${destino.billetera}`
+        : destino.entidad ? `Otra billetera (entidad ${destino.entidad})` : 'Cuenta bancaria';
     const error = el('p', { clase: 'error', hidden: true, role: 'alert' });
-    const confirmar = el('button', { clase: 'boton boton-primario boton-ancho boton-grande', texto: `Retirar ${enPesos(centavos)}` });
+    const confirmar = el('button', { clase: 'boton boton-primario boton-ancho boton-grande', texto: `Enviar ${enPesos(centavos)}` });
     confirmar.addEventListener('click', async () => {
       confirmar.disabled = true;
       confirmar.textContent = 'Procesando…';
       error.hidden = true;
       try {
-        const cuerpo = { origen_id: cuentaID(), cbu_destino: cbu, monto_centavos: centavos };
+        const cuerpo = { origen_id: cuentaID(), cbu_destino: destino.cbu, monto_centavos: centavos };
         const r = await pedir('POST', '/egresos', { clave: claveRetiro(cuerpo), cuerpo });
         if (r.codigo === 0 && r.datos?.codigo === 'sesion_vencida') return;
         tarjeta.replaceChildren(resultado(r, ir, {
-          exito: 'Tu retiro está en camino', centavos, detalle: `A la cuenta terminada en ${cbu.slice(-4)}.`,
+          exito: 'Tu plata está en camino', centavos,
+          detalle: nombre ? `A ${nombre}.` : `A la cuenta terminada en ${destino.cbu.slice(-4)}.`,
         }));
       } catch (err) {
-        error.textContent = `${err.message}. Podés reintentar sin riesgo de retirarlo dos veces.`;
+        error.textContent = `${err.message}. Podés reintentar sin riesgo de enviarlo dos veces.`;
         error.hidden = false;
         confirmar.disabled = false;
         confirmar.textContent = 'Reintentar';
@@ -640,11 +780,12 @@ export async function retirar(hoja, ir) {
     });
     tarjeta.replaceChildren(pasos(2, 2),
       el('div', { clase: 'resultado', style: 'padding-bottom:.5rem' },
-        el('span', { clase: 'sello sello-espera' }, icono('retirar', 30)),
-        el('p', { clase: 'ayuda', texto: 'Vas a retirar' }),
+        nombre ? avatar(destino.alias, 'grande') : el('span', { clase: 'sello sello-espera' }, icono('retirar', 30)),
+        el('p', { clase: 'ayuda', texto: nombre ? `Vas a enviarle a ${nombre}` : 'Vas a retirar' }),
         el('div', { clase: 'importe-grande', texto: enPesos(centavos) })),
       el('dl', { clase: 'recibo' },
-        filaRecibo('A la cuenta', cbuVisible(cbu), 'mono'),
+        filaRecibo(destino.entidad ? 'CVU' : 'CBU', cbuVisible(destino.cbu), 'mono'),
+        filaRecibo('Dónde', donde),
         filaRecibo('Costo', 'Sin costo'),
         filaRecibo('Te queda', enPesos(disponible - centavos))),
       el('div', { clase: 'nota', style: 'margin-top:1rem' }, icono('reloj', 18),
@@ -663,7 +804,16 @@ export async function retirar(hoja, ir) {
 
 export async function ingresar(hoja, ir) {
   const tarjeta = el('section', { clase: 'tarjeta' });
-  hoja.append(encabezado('Ingresar dinero', 'Transferí desde tu banco y lo acreditamos en tu cuenta.'), tarjeta);
+  const cvu = estado.cuenta?.cvu || '';
+  const aliasPublico = estado.cuenta?.aliasPublico || estado.cuenta?.alias || '';
+  hoja.append(encabezado('Ingresar dinero', 'Pedile plata a otra cuenta de núcleo, o transferí desde tu banco.'),
+    pedirDinero(),
+    el('h2', { clase: 'subtitulo-seccion', texto: 'Desde tu banco' }),
+    tarjeta,
+    cvu ? el('section', { clase: 'tarjeta' },
+      el('h2', { texto: 'O que te transfieran a tu CVU' }),
+      el('p', { clase: 'ayuda', texto: `Lo que llegue a este CVU, o a tu alias @${aliasPublico}, se acredita solo y sin código.` }),
+      el('div', { clase: 'codigo-grande codigo-cvu' }, el('span', { texto: cbuVisible(cvu) }), botonCopiar(cvu, 'Copiar tu CVU'))) : null);
 
   const claveIngreso = claveDeIntento('ingreso');
 
@@ -709,6 +859,96 @@ export async function ingresar(hoja, ir) {
   tarjeta.replaceChildren(pasos(2, 1), form);
   validar();
   entrada.focus();
+}
+
+const ESTADO_SOLICITUD = {
+  pendiente: { texto: 'Esperando', tono: 'espera', icono: 'reloj' },
+  aceptada: { texto: 'Pagada', tono: 'ok', icono: 'ok' },
+  rechazada: { texto: 'Rechazada', tono: 'no', icono: 'cruz' },
+};
+
+// Un pedido a otra cuenta de núcleo: la otra persona lo ve en su inicio y decide si paga. Si paga,
+// es un retiro de su cuenta a tu CVU, y la plata llega por la conciliación como cualquier otra.
+function pedirDinero() {
+  const tarjeta = el('section', { clase: 'tarjeta' });
+  const lista = el('div', { clase: 'lista' });
+  const claveSolicitud = claveDeIntento('solicitud');
+  let espera = 0;
+
+  const pintarLista = async () => {
+    clearTimeout(espera);
+    const r = await pedir('GET', `/cuentas/${cuentaID()}/solicitudes?rol=enviadas`);
+    if (!lista.isConnected) return;
+    const enviadas = r.ok ? (r.datos.solicitudes || []).slice(0, 5) : [];
+    lista.replaceChildren(...enviadas.map((x) => {
+      const e = ESTADO_SOLICITUD[x.estado] || ESTADO_SOLICITUD.pendiente;
+      return el('div', { clase: 'fila fila-fija' },
+        avatar(x.alias_pagador || '?'),
+        el('span', { clase: 'fila-texto' },
+          el('div', { clase: 'fila-titulo', texto: `A @${x.alias_pagador || cbuVisible(x.cvu_pagador)}` }),
+          el('div', { clase: 'fila-sub', texto: x.motivo || cuando(x.creada_en) })),
+        el('span', { clase: 'fila-monto' }, enPesos(x.monto_centavos),
+          el('span', { clase: `pildora pildora-${e.tono}` }, icono(e.icono, 14), e.texto)));
+    }));
+    if (enviadas.some((x) => x.estado === 'pendiente')) espera = setTimeout(() => pintarLista().catch(() => {}), 3000);
+  };
+
+  const campo = el('input', {
+    autocomplete: 'off', autocapitalize: 'none', spellcheck: false, placeholder: 'sur.beto o un CVU',
+    'aria-describedby': 'pedido-ayuda', maxLength: 31,
+  });
+  const ayuda = el('span', { clase: 'campo-ayuda', id: 'pedido-ayuda', texto: 'El alias o el CVU de quien te paga.' });
+  const entrada = el('input', { clase: 'importe-entrada', inputMode: 'decimal', placeholder: '$ 0', autocomplete: 'off', 'aria-label': 'Monto' });
+  const pedirBoton = el('button', { clase: 'boton boton-primario boton-ancho', type: 'submit', texto: 'Pedir' });
+
+  const validar = () => {
+    const error = problemaDeDestino(campo.value)
+      || (entrada.value.trim() && !(aCentavos(entrada.value) > 0) ? 'Escribí un monto válido, por ejemplo 1500' : '');
+    ayuda.textContent = error || 'El alias o el CVU de quien te paga.';
+    ayuda.className = error ? 'campo-error' : 'campo-ayuda';
+    pedirBoton.disabled = Boolean(error) || !destinoCompleto(campo.value) || !(aCentavos(entrada.value) > 0);
+  };
+  campo.addEventListener('input', () => { formatearDestino(campo); validar(); });
+  entrada.addEventListener('input', validar);
+
+  const form = el('form', { novalidate: true, style: 'display:grid;gap:1rem' },
+    el('div', { clase: 'cabecera-tarjeta' }, el('h2', { texto: 'Pedile a otra cuenta' })),
+    el('p', { clase: 'ayuda', texto: 'Le llega el pedido a su inicio, en esta billetera o en otra. Si lo paga, la plata entra sola a tu cuenta.' }),
+    el('label', { clase: 'campo' }, el('span', { clase: 'campo-rotulo', texto: 'A quién' }), campo, ayuda),
+    el('div', { clase: 'importe-campo' }, entrada),
+    pedirBoton, lista);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    validar();
+    if (pedirBoton.disabled) return;
+    pedirBoton.disabled = true;
+    pedirBoton.textContent = 'Pidiendo…';
+    try {
+      const cuerpo = { destino_id: cuentaID(), de: claveDeDestino(campo.value), monto_centavos: aCentavos(entrada.value) };
+      const r = await pedir('POST', '/solicitudes', { clave: claveSolicitud(cuerpo), cuerpo });
+      if (r.codigo === 0 && r.datos?.codigo === 'sesion_vencida') return;
+      if (!r.ok) {
+        ayuda.textContent = r.codigo === 404 ? `No encontramos ninguna cuenta con el alias @${cuerpo.de}` : mensajeDeError(r);
+        ayuda.className = 'campo-error';
+        return;
+      }
+      avisar(`Le pediste ${enPesos(cuerpo.monto_centavos)} a @${r.datos.alias_pagador || cuerpo.de}`);
+      campo.value = '';
+      entrada.value = '';
+      await pintarLista();
+    } catch (err) {
+      ayuda.textContent = err.message;
+      ayuda.className = 'campo-error';
+    } finally {
+      pedirBoton.textContent = 'Pedir';
+      validar();
+    }
+  });
+
+  tarjeta.append(form);
+  validar();
+  pintarLista().catch(() => {});
+  return tarjeta;
 }
 
 // "Ya hice la transferencia" hace de aviso del banco: la API registra el depósito en el
@@ -792,7 +1032,7 @@ export async function operacion(hoja, ir, tipo, id) {
   const persona = otra && otra.tipo !== 'interna' ? otra : null;
 
   const titulo = o.tipo === 'egreso' ? 'Retiro a cuenta bancaria'
-    : o.tipo === 'ingreso' ? 'Ingreso desde tu banco'
+    : o.tipo === 'ingreso' ? (o.nombre_origen ? `Recibiste de @${o.nombre_origen}` : 'Ingreso desde tu banco')
       : persona ? `${entra ? 'Recibiste de' : 'Enviaste a'} @${persona.alias}`
         : entra ? 'Saldo de bienvenida' : 'Ajuste';
 
@@ -809,7 +1049,8 @@ export async function operacion(hoja, ir, tipo, id) {
     el('dl', { clase: 'recibo' },
       filaRecibo('Fecha', fechaCompleta(o.creada_en)),
       filaRecibo('Número de operación', `#${o.id}`, 'mono', String(o.id)),
-      o.referencia ? filaRecibo(o.tipo === 'ingreso' ? 'Código de ingreso' : 'Referencia', o.referencia, 'mono', o.referencia) : null,
+      o.referencia ? filaRecibo(o.tipo === 'ingreso' && !o.cbu_origen ? 'Código de ingreso' : 'Referencia', o.referencia, 'mono', o.referencia) : null,
+      o.cbu_origen ? filaRecibo('Desde la cuenta', cbuVisible(o.cbu_origen), 'mono') : null,
       o.cbu_destino ? filaRecibo('Cuenta de destino', cbuVisible(o.cbu_destino), 'mono') : null,
       o.motivo ? filaRecibo('Detalle', o.motivo) : null),
     el('div', { clase: 'fila-botones', style: 'margin-top:1.25rem' },

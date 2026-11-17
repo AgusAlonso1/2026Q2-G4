@@ -12,6 +12,8 @@
 # archive_rows_per_row_group = 1000000 # filas por bloque dentro de cada archivo
 # export_retention_days      = 7       # días que queda en S3 el archivo de una exportación
 
+# billetera = "norte" # prefijo de los alias (norte.ana) y origen de la entidad del CVU; vacío: nucleo
+
 # db_instance_class  = "db.t3.micro"
 # db_multi_az        = false # para probar: el apply tarda la mitad
 # db_max_connections = 60

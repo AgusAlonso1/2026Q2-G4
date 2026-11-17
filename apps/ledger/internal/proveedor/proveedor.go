@@ -45,14 +45,17 @@ func EsCredencial(err error) bool {
 }
 
 type Cliente struct {
-	base  string
-	http  *http.Client
-	clave string
+	base    string
+	http    *http.Client
+	clave   string
+	entidad string
 
 	resolver func(context.Context) string
 }
 
 func (c *Cliente) ConResolver(f func(context.Context) string) { c.resolver = f }
+
+func (c *Cliente) ConEntidad(entidad string) { c.entidad = entidad }
 
 func (c *Cliente) baseVigente(ctx context.Context) string {
 	if c.resolver != nil {
@@ -84,6 +87,17 @@ type Movimiento struct {
 	Referencia    string    `json:"referencia"`
 	MontoCentavos int64     `json:"monto_centavos"`
 	OcurridoEn    time.Time `json:"ocurrido_en"`
+	CVUDestino    string    `json:"cvu_destino,omitempty"`
+	CBUOrigen     string    `json:"cbu_origen,omitempty"`
+	NombreOrigen  string    `json:"nombre_origen,omitempty"`
+}
+
+type PedidoEgreso struct {
+	Referencia    string `json:"referencia"`
+	CBU           string `json:"cbu"`
+	MontoCentavos int64  `json:"monto_centavos"`
+	CBUOrigen     string `json:"cbu_origen,omitempty"`
+	NombreOrigen  string `json:"nombre_origen,omitempty"`
 }
 
 type respuestaMovimientos struct {
@@ -91,12 +105,8 @@ type respuestaMovimientos struct {
 	Cursor      string       `json:"cursor"`
 }
 
-func (c *Cliente) OrdenarEgreso(ctx context.Context, referencia, cbu string, montoCentavos int64) (RespuestaEgreso, error) {
-	cuerpo, _ := json.Marshal(map[string]any{
-		"referencia":     referencia,
-		"cbu":            cbu,
-		"monto_centavos": montoCentavos,
-	})
+func (c *Cliente) OrdenarEgreso(ctx context.Context, p PedidoEgreso) (RespuestaEgreso, error) {
+	cuerpo, _ := json.Marshal(p)
 	var out RespuestaEgreso
 	err := c.pedir(ctx, http.MethodPost, "/egresos", cuerpo, &out)
 	return out, err
@@ -109,9 +119,16 @@ func (c *Cliente) ConsultarEgreso(ctx context.Context, referencia string) (Respu
 }
 
 func (c *Cliente) Movimientos(ctx context.Context, cursor string) (movs []Movimiento, siguiente string, crudo []byte, err error) {
-	ruta := "/movimientos"
+	consulta := url.Values{}
 	if cursor != "" {
-		ruta += "?desde=" + url.QueryEscape(cursor)
+		consulta.Set("desde", cursor)
+	}
+	if c.entidad != "" {
+		consulta.Set("entidad", c.entidad)
+	}
+	ruta := "/movimientos"
+	if len(consulta) > 0 {
+		ruta += "?" + consulta.Encode()
 	}
 	crudo, err = c.pedirCrudo(ctx, http.MethodGet, ruta, nil)
 	if err != nil {
@@ -124,11 +141,90 @@ func (c *Cliente) Movimientos(ctx context.Context, cursor string) (movs []Movimi
 	return out.Movimientos, out.Cursor, crudo, nil
 }
 
+type CuentaAlias struct {
+	Alias     string `json:"alias"`
+	CVU       string `json:"cvu"`
+	Entidad   string `json:"entidad,omitempty"`
+	Billetera string `json:"billetera,omitempty"`
+}
+
+func (c *Cliente) PublicarAlias(ctx context.Context, billetera string, cuentas []CuentaAlias) (ocupados []string, err error) {
+	cuerpo, _ := json.Marshal(map[string]any{"entidad": c.entidad, "billetera": billetera, "cuentas": cuentas})
+	var out struct {
+		Ocupados []string `json:"ocupados"`
+	}
+	err = c.pedir(ctx, http.MethodPut, "/alias", cuerpo, &out)
+	return out.Ocupados, err
+}
+
+func (c *Cliente) BuscarCuenta(ctx context.Context, clave string) (CuentaAlias, error) {
+	var out CuentaAlias
+	err := c.pedir(ctx, http.MethodGet, "/cuentas/"+url.PathEscape(clave), nil, &out)
+	return out, err
+}
+
+type Solicitud struct {
+	Referencia    string     `json:"referencia"`
+	CVUPagador    string     `json:"cvu_pagador"`
+	AliasPagador  string     `json:"alias_pagador,omitempty"`
+	CVUCobrador   string     `json:"cvu_cobrador"`
+	AliasCobrador string     `json:"alias_cobrador,omitempty"`
+	MontoCentavos int64      `json:"monto_centavos"`
+	Estado        string     `json:"estado,omitempty"`
+	Motivo        string     `json:"motivo,omitempty"`
+	CreadaEn      time.Time  `json:"creada_en"`
+	ResueltaEn    *time.Time `json:"resuelta_en,omitempty"`
+}
+
+func (c *Cliente) CrearSolicitud(ctx context.Context, x Solicitud) (Solicitud, error) {
+	cuerpo, _ := json.Marshal(x)
+	var out Solicitud
+	err := c.pedir(ctx, http.MethodPost, "/solicitudes", cuerpo, &out)
+	return out, err
+}
+
+func (c *Cliente) Solicitudes(ctx context.Context, cvuPagador, cvuCobrador, estado string) ([]Solicitud, error) {
+	q := url.Values{}
+	if cvuPagador != "" {
+		q.Set("cvu_pagador", cvuPagador)
+	}
+	if cvuCobrador != "" {
+		q.Set("cvu_cobrador", cvuCobrador)
+	}
+	if estado != "" {
+		q.Set("estado", estado)
+	}
+	var out struct {
+		Solicitudes []Solicitud `json:"solicitudes"`
+	}
+	err := c.pedir(ctx, http.MethodGet, "/solicitudes?"+q.Encode(), nil, &out)
+	return out.Solicitudes, err
+}
+
+func (c *Cliente) VerSolicitud(ctx context.Context, referencia string) (Solicitud, error) {
+	var out Solicitud
+	err := c.pedir(ctx, http.MethodGet, "/solicitudes/"+url.PathEscape(referencia), nil, &out)
+	return out, err
+}
+
+func (c *Cliente) ResolverSolicitud(ctx context.Context, referencia, estado, motivo string) (Solicitud, error) {
+	cuerpo, _ := json.Marshal(map[string]string{"estado": estado, "motivo": motivo})
+	var out Solicitud
+	err := c.pedir(ctx, http.MethodPost, "/solicitudes/"+url.PathEscape(referencia)+"/resolver", cuerpo, &out)
+	return out, err
+}
+
+func EsNoEncontrado(err error) bool {
+	pe, ok := EsRechazo(err)
+	return ok && pe.Codigo == http.StatusNotFound
+}
+
 func (c *Cliente) RegistrarDeposito(ctx context.Context, idOrigen, referencia string, montoCentavos int64) (Movimiento, error) {
 	cuerpo, _ := json.Marshal(map[string]any{
 		"id_origen":      idOrigen,
 		"referencia":     referencia,
 		"monto_centavos": montoCentavos,
+		"entidad":        c.entidad,
 	})
 	var out Movimiento
 	err := c.pedir(ctx, http.MethodPost, "/depositos", cuerpo, &out)

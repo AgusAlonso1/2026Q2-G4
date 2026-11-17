@@ -320,8 +320,9 @@ function filaMovimiento(m, contactos, ir, soloHora) {
   const otra = contactos?.get(m.contraparte_id);
   const esPersona = tipo === 'transferencia' && otra && otra.tipo !== 'interna';
 
-  const marca = esPersona
-    ? avatar(otra.alias)
+  const contacto = tipo === 'egreso' ? m.nombre_destino : tipo === 'ingreso' ? m.nombre_origen : '';
+  const marca = esPersona || contacto
+    ? avatar(esPersona ? otra.alias : contacto)
     : el('span', { clase: `fila-icono ${tipo === 'transferencia' ? (entra ? 'entra' : 'sale') : 'banco'}` },
       icono(tipo === 'egreso' ? 'retirar' : tipo === 'ingreso' ? 'ingresar' : entra ? 'ingresar' : 'enviar', 20));
 
@@ -340,7 +341,9 @@ function filaMovimiento(m, contactos, ir, soloHora) {
 }
 
 function tituloMovimiento(m, tipo, entra, otra) {
-  if (anulada(m)) return tipo === 'egreso' ? 'Retiro rechazado' : 'Operación anulada';
+  const aNucleo = tipo === 'egreso' && m.nombre_destino;
+  if (anulada(m)) return aNucleo ? 'Transferencia rechazada' : tipo === 'egreso' ? 'Retiro rechazado' : 'Operación anulada';
+  if (aNucleo) return entra ? 'Transferencia devuelta' : `Transferencia a @${m.nombre_destino}`;
   if (tipo === 'egreso') return entra ? 'Retiro devuelto' : 'Retiro a cuenta bancaria';
   if (tipo === 'ingreso') return m.nombre_origen ? `Transferencia de @${m.nombre_origen}` : 'Ingreso desde tu banco';
   if (!otra || otra.tipo === 'interna') return entra ? 'Saldo de bienvenida' : 'Ajuste';
@@ -349,7 +352,7 @@ function tituloMovimiento(m, tipo, entra, otra) {
 
 function subtituloMovimiento(m, tipo, entra) {
   if (anulada(m)) return 'Te devolvimos el dinero';
-  if (tipo === 'egreso') return entra ? 'Devolución' : 'Retiro';
+  if (tipo === 'egreso') return entra ? 'Devolución' : m.nombre_destino ? 'Enviaste' : 'Retiro';
   if (tipo === 'ingreso') return m.nombre_origen ? 'Recibiste' : 'Ingreso';
   return entra ? 'Recibiste' : 'Enviaste';
 }
@@ -858,7 +861,7 @@ export async function ingresar(hoja, ir) {
   });
   tarjeta.replaceChildren(pasos(2, 1), form);
   validar();
-  entrada.focus();
+  hoja.querySelector('input')?.focus();
 }
 
 const ESTADO_SOLICITUD = {
@@ -1031,7 +1034,7 @@ export async function operacion(hoja, ir, tipo, id) {
   const otra = contactos.get(entra ? o.origen_id : o.destino_id);
   const persona = otra && otra.tipo !== 'interna' ? otra : null;
 
-  const titulo = o.tipo === 'egreso' ? 'Retiro a cuenta bancaria'
+  const titulo = o.tipo === 'egreso' ? (o.nombre_destino ? `Enviaste a @${o.nombre_destino}` : 'Retiro a cuenta bancaria')
     : o.tipo === 'ingreso' ? (o.nombre_origen ? `Recibiste de @${o.nombre_origen}` : 'Ingreso desde tu banco')
       : persona ? `${entra ? 'Recibiste de' : 'Enviaste a'} @${persona.alias}`
         : entra ? 'Saldo de bienvenida' : 'Ajuste';

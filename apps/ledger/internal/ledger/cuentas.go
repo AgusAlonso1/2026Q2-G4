@@ -135,6 +135,7 @@ type Movimiento struct {
 	Tramo         string    `json:"tramo"`
 	CreadoEn      time.Time `json:"creado_en"`
 	NombreOrigen  string    `json:"nombre_origen,omitempty"`
+	NombreDestino string    `json:"nombre_destino,omitempty"`
 }
 
 type movimientoConAlias struct {
@@ -152,7 +153,7 @@ func (s *Servicio) Movimientos(ctx context.Context, cuentaID int64, limite, desp
 	}
 	filas, err := s.pool.Query(ctx, `
 		SELECT a.periodo, a.cuenta_id, a.orden_id, a.contraparte_id, a.monto_centavos, a.tramo,
-		       a.creado_en, coalesce(o.nombre_origen, '')
+		       a.creado_en, coalesce(o.nombre_origen, ''), coalesce(o.nombre_destino, '')
 		FROM asientos a
 		LEFT JOIN ordenes o ON o.id = a.orden_id
 		WHERE a.cuenta_id = $1
@@ -166,7 +167,7 @@ func (s *Servicio) Movimientos(ctx context.Context, cuentaID int64, limite, desp
 	movs := []Movimiento{}
 	for filas.Next() {
 		var m Movimiento
-		if err := filas.Scan(&m.Periodo, &m.CuentaID, &m.OrdenID, &m.ContraparteID, &m.MontoCentavos, &m.Tramo, &m.CreadoEn, &m.NombreOrigen); err != nil {
+		if err := filas.Scan(&m.Periodo, &m.CuentaID, &m.OrdenID, &m.ContraparteID, &m.MontoCentavos, &m.Tramo, &m.CreadoEn, &m.NombreOrigen, &m.NombreDestino); err != nil {
 			return nil, err
 		}
 		movs = append(movs, m)

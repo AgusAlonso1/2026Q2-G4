@@ -30,12 +30,13 @@ func (s *Servicio) Egresar(ctx context.Context, e EntradaEgreso) (o *Orden, err 
 	if e.MontoCentavos <= 0 {
 		return nil, apierr.Invalido("monto_centavos tiene que ser positivo")
 	}
+	nombreDestino := ""
 	if e.CBUDestino == "" && e.AliasDestino != "" {
 		d, err := s.BuscarDestino(ctx, e.AliasDestino, e.OrigenID)
 		if err != nil {
 			return nil, err
 		}
-		e.CBUDestino = d.CBU
+		e.CBUDestino, nombreDestino = d.CBU, d.Alias
 	}
 	if e.CBUDestino == "" {
 		return nil, apierr.Invalido("falta cbu_destino o alias_destino")
@@ -48,6 +49,11 @@ func (s *Servicio) Egresar(ctx context.Context, e EntradaEgreso) (o *Orden, err 
 	}
 	if e.CBUDestino == s.CVU(e.OrigenID) {
 		return nil, apierr.Invalido("cbu_destino es el CVU de la misma cuenta de origen")
+	}
+	if _, _, esCVU := cvu.Partes(e.CBUDestino); esCVU && nombreDestino == "" {
+		if d, err := s.destinoDeLaCBU(ctx, e.CBUDestino); err == nil {
+			nombreDestino = d.Alias
+		}
 	}
 
 	transitoria := s.interna(AliasTransitoriaEgresos)
@@ -62,6 +68,7 @@ func (s *Servicio) Egresar(ctx context.Context, e EntradaEgreso) (o *Orden, err 
 			OrigenID:       &e.OrigenID,
 			DestinoID:      &transitoria,
 			CBUDestino:     e.CBUDestino,
+			NombreDestino:  nombreDestino,
 			MontoCentavos:  e.MontoCentavos,
 			Estado:         EstadoPendiente,
 		})

@@ -106,12 +106,13 @@ func insertarOrden(ctx context.Context, tx pgx.Tx, o nuevaOrden) (int64, error) 
 	var id int64
 	err := tx.QueryRow(ctx, `
 		INSERT INTO ordenes (tipo, idempotency_key, referencia, origen_id, destino_id,
-		                     cbu_destino, cbu_origen, nombre_origen, monto_centavos, estado)
-		VALUES ($1::tipo_orden, $2, $3, $4, $5, $6, $7, $8, $9, $10::estado_orden)
+		                     cbu_destino, cbu_origen, nombre_origen, nombre_destino,
+		                     monto_centavos, estado)
+		VALUES ($1::tipo_orden, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::estado_orden)
 		RETURNING id`,
 		o.Tipo, o.IdempotencyKey, nuloSiVacio(o.Referencia), o.OrigenID, o.DestinoID,
 		nuloSiVacio(o.CBUDestino), nuloSiVacio(o.CBUOrigen), nuloSiVacio(o.NombreOrigen),
-		o.MontoCentavos, o.Estado).Scan(&id)
+		nuloSiVacio(o.NombreDestino), o.MontoCentavos, o.Estado).Scan(&id)
 	if pg.EsViolacionUnica(err, "ordenes_tipo_idempotency_key_key") {
 		return 0, errReintento
 	}
@@ -133,6 +134,7 @@ type nuevaOrden struct {
 	CBUDestino     string
 	CBUOrigen      string
 	NombreOrigen   string
+	NombreDestino  string
 	MontoCentavos  int64
 	Estado         string
 }

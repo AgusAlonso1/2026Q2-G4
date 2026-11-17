@@ -74,6 +74,13 @@ func TestRetiroAUnCVUSeAcreditaEnLaCuentaDeDestino(t *testing.T) {
 	if retiro.Estado != ledger.EstadoAcreditada {
 		t.Fatalf("el retiro quedo %s (%s)", retiro.Estado, retiro.Motivo)
 	}
+	if retiro.NombreDestino != svc.AliasPublico("beto") {
+		t.Errorf("nombre_destino del retiro = %q", retiro.NombreDestino)
+	}
+	enviados, err := svc.Movimientos(ctx, ana.ID, 1, 0)
+	if err != nil || len(enviados) != 1 || enviados[0].NombreDestino != svc.AliasPublico("beto") {
+		t.Errorf("el movimiento de ana no dice a quien le transfirio: %+v, %v", enviados, err)
+	}
 
 	res := conciliar(t, svc, pool)
 	if res.Movimientos != 1 || res.Atribuidos != 1 {
@@ -241,7 +248,7 @@ func TestLosAliasSePublicanConElPrefijoDeLaBilleteraYResuelvenElDestino(t *testi
 
 	retiro, err := svc.Egresar(ctx, ledger.EntradaEgreso{
 		IdempotencyKey: "retiro-1", OrigenID: ana.ID, AliasDestino: "otra.carla", MontoCentavos: 20000})
-	if err != nil || retiro.Estado != ledger.EstadoAcreditada || retiro.CBUDestino != carla {
+	if err != nil || retiro.Estado != ledger.EstadoAcreditada || retiro.CBUDestino != carla || retiro.NombreDestino != "otra.carla" {
 		t.Fatalf("retiro por alias = %+v, %v", retiro, err)
 	}
 }

@@ -1356,6 +1356,7 @@ components:
         cbu_destino: { type: string }
         cbu_origen: { type: string, description: En un ingreso por CVU, el CVU de quien pagó. }
         nombre_origen: { type: string, description: En un ingreso por CVU, el alias de quien pagó. }
+        nombre_destino: { type: string, description: 'En un egreso a un CVU de núcleo, el alias de la cuenta que lo recibe.' }
         monto_centavos: { type: integer, format: int64 }
         motivo: { type: string }
         creada_en: { type: string, format: date-time }
@@ -1391,6 +1392,7 @@ components:
           description: Qué paso de la operación asienta esta fila. Discrimina los pares de una misma orden.
         creado_en: { type: string, format: date-time }
         nombre_origen: { type: string, description: En un ingreso por CVU, el alias de quien pagó. }
+        nombre_destino: { type: string, description: 'En un egreso a un CVU de núcleo, el alias de la cuenta que lo recibe.' }
 
     ExtractoPeriodo:
       type: object

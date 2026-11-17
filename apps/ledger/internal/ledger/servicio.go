@@ -214,6 +214,7 @@ type Orden struct {
 	CBUDestino    string    `json:"cbu_destino,omitempty"`
 	CBUOrigen     string    `json:"cbu_origen,omitempty"`
 	NombreOrigen  string    `json:"nombre_origen,omitempty"`
+	NombreDestino string    `json:"nombre_destino,omitempty"`
 	MontoCentavos int64     `json:"monto_centavos"`
 	Motivo        string    `json:"motivo,omitempty"`
 	CreadaEn      time.Time `json:"creada_en"`
@@ -222,12 +223,12 @@ type Orden struct {
 
 const columnasOrden = `id, tipo::text, estado::text, coalesce(referencia, ''), origen_id,
 	destino_id, coalesce(cbu_destino, ''), coalesce(cbu_origen, ''), coalesce(nombre_origen, ''),
-	monto_centavos, coalesce(motivo, ''), creada_en, actualizada_en`
+	coalesce(nombre_destino, ''), monto_centavos, coalesce(motivo, ''), creada_en, actualizada_en`
 
 func escanearOrden(fila pgx.Row) (*Orden, error) {
 	var o Orden
 	err := fila.Scan(&o.ID, &o.Tipo, &o.Estado, &o.Referencia, &o.OrigenID, &o.DestinoID,
-		&o.CBUDestino, &o.CBUOrigen, &o.NombreOrigen, &o.MontoCentavos, &o.Motivo, &o.CreadaEn, &o.ActualizadaEn)
+		&o.CBUDestino, &o.CBUOrigen, &o.NombreOrigen, &o.NombreDestino, &o.MontoCentavos, &o.Motivo, &o.CreadaEn, &o.ActualizadaEn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apierr.NoEncontrado("no existe la orden")
 	}

@@ -1,0 +1,1 @@
+ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS nombre_destino TEXT;

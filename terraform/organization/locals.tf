@@ -65,6 +65,7 @@ locals {
         COGNITO_CLIENT_ID         = module.auth.client_id
         CORS_ORIGENES             = module.website.website_url
         PROVEEDOR_URL             = coalesce(var.proveedor_url, "${local.api_url}/servicio-mock")
+        BILLETERA                 = var.billetera
         SNS_TOPIC_ARN             = module.events.topic_arn
         TITULARES_TOPIC_ARN       = module.events.titulares_topic_arn
         APP_URL                   = module.website.website_url

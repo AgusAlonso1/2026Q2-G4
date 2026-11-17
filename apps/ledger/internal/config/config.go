@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"ledger/internal/cvu"
 )
 
 type Config struct {
@@ -41,6 +43,9 @@ type Config struct {
 	Bienvenida int64
 
 	ConciliacionIntervalo time.Duration
+
+	Entidad   string
+	Billetera string
 
 	SNSTopicARN    string
 	WebhookSecreto string
@@ -83,7 +88,8 @@ func Cargar() (Config, error) {
 		AdminClave:               os.Getenv("ADMIN_API_KEY"),
 		AdminAbierto:             os.Getenv("ADMIN_ABIERTO") == "1",
 		Bienvenida:               int64(entero("SALDO_BIENVENIDA_CENTAVOS", 5000000)),
-		ConciliacionIntervalo:    duracion("CONCILIACION_INTERVALO", 30*time.Second),
+		ConciliacionIntervalo:    duracion("CONCILIACION_INTERVALO", 5*time.Second),
+		Billetera:                texto("BILLETERA", "nucleo"),
 		SNSTopicARN:              os.Getenv("SNS_TOPIC_ARN"),
 		WebhookSecreto:           os.Getenv("WEBHOOK_SECRET"),
 		RetencionMeses:           entero("ARCHIVADO_RETENCION_MESES", 12),
@@ -112,6 +118,13 @@ func Cargar() (Config, error) {
 	}
 	if c.ExportacionesVisibilidad < 30*time.Second {
 		return c, fmt.Errorf("EXPORTACIONES_VISIBILIDAD tiene que ser de al menos 30s")
+	}
+	if !cvu.BilleteraValida(c.Billetera) {
+		return c, fmt.Errorf("BILLETERA tiene que ser de 2 a 15 letras minusculas o numeros, empezando por una letra")
+	}
+	c.Entidad = cvu.EntidadDeBilletera(c.Billetera)
+	if c.ConciliacionIntervalo < 2*time.Second {
+		return c, fmt.Errorf("CONCILIACION_INTERVALO tiene que ser de al menos 2s")
 	}
 	if c.Bienvenida < 0 {
 		return c, fmt.Errorf("SALDO_BIENVENIDA_CENTAVOS no puede ser negativo")

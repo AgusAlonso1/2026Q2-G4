@@ -72,6 +72,9 @@ paths:
                   sub: { type: string, description: El `sub` del usuario en Cognito. }
                   cuenta_id: { type: [integer, "null"], format: int64 }
                   alias: { type: string }
+                  cvu: { type: string, description: El CVU de la cuenta, para recibir transferencias. }
+                  alias_publico: { type: string, description: 'El alias con el prefijo de la billetera (`norte.ana`): con ese la encuentran desde otro despliegue.' }
+                  billetera: { type: string, description: El nombre de la billetera de este despliegue (`BILLETERA`). }
                   expira_en: { type: string, format: date-time }
         "401": { description: Falta el token, venció o no es válido. }
         "503": { description: No se pudieron leer las claves de Cognito. }
@@ -389,6 +392,140 @@ paths:
               schema: { $ref: '#/components/schemas/Orden' }
         '404': { $ref: '#/components/responses/NoEncontrado' }
 
+  /destinos/{clave}:
+    get:
+      tags: [operaciones]
+      summary: A quién le llega un envío a este alias, CBU o CVU
+      description: |
+        Cada despliegue publica en el proveedor el alias de sus cuentas con el prefijo de su
+        billetera (`norte.ana`). Un alias con el prefijo propio, o sin prefijo, es una cuenta
+        de este despliegue; uno con otro prefijo se busca en el proveedor. Un CVU se valida
+        y, si es de núcleo, se completa con su alias. Una CBU bancaria sólo se valida.
+      operationId: buscarDestino
+      parameters:
+        - { name: clave, in: path, required: true, schema: { type: string }, example: ana }
+      responses:
+        '200':
+          description: El destino.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cbu: { type: string, description: La CBU o el CVU a usar como `cbu_destino`. }
+                  alias: { type: string }
+                  entidad: { type: string, description: La entidad del CVU; vacía para una CBU bancaria. }
+                  billetera: { type: string, description: El nombre de la billetera dueña del CVU, si está publicada. }
+                  misma_entidad: { type: boolean, description: Si es un CVU de este despliegue. }
+        '400': { description: CBU o CVU inválido, o el CVU de la propia cuenta. }
+        '404': { description: No hay ninguna cuenta con ese alias. }
+        '502': { description: No se pudo consultar el proveedor. }
+
+  /solicitudes:
+    post:
+      tags: [operaciones]
+      summary: Pedirle plata a otra cuenta de núcleo
+      description: |
+        Registra en el proveedor un pedido de cobro al alias o CVU `de`, de este despliegue o
+        de otro. Quien tiene que pagar lo ve en `GET /cuentas/{id}/solicitudes?rol=recibidas`
+        y decide. Si paga, es un egreso de su cuenta al CVU de `destino_id`, y la plata entra
+        por la conciliación.
+      operationId: pedirDinero
+      parameters:
+        - $ref: '#/components/parameters/ClaveIdempotencia'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destino_id, de, monto_centavos]
+              properties:
+                destino_id: { type: integer, format: int64, description: La cuenta que cobra. }
+                de: { type: string, example: sur.beto, description: Alias o CVU de quien paga. }
+                monto_centavos: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201':
+          description: La solicitud, `pendiente`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Solicitud' }
+        '400': { description: 'Monto inválido, una CBU bancaria o la propia cuenta.' }
+        '404': { description: No hay ninguna cuenta con ese alias. }
+        '502': { description: No se pudo registrar en el proveedor. }
+
+  /cuentas/{id}/solicitudes:
+    get:
+      tags: [operaciones]
+      summary: Pedidos de plata de una cuenta
+      operationId: listarSolicitudes
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+        - name: rol
+          in: query
+          required: true
+          schema: { type: string, enum: [recibidas, enviadas] }
+          description: '`recibidas`: las pendientes que tiene que pagar. `enviadas`: las últimas que pidió.'
+      responses:
+        '200':
+          description: Las solicitudes, de la más nueva a la más vieja.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  solicitudes: { type: array, items: { $ref: '#/components/schemas/Solicitud' } }
+
+  /solicitudes/{referencia}/aceptar:
+    post:
+      tags: [operaciones]
+      summary: Pagar un pedido de plata
+      description: |
+        Hace el egreso al CVU de quien lo pidió, con clave de idempotencia propia del pedido:
+        aceptarlo dos veces no paga dos veces. Si el egreso sale, el pedido queda `aceptada`.
+      operationId: aceptarSolicitud
+      parameters:
+        - { name: referencia, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cuenta_id]
+              properties:
+                cuenta_id: { type: integer, format: int64, description: La cuenta que paga. }
+      responses:
+        '200': { description: 'La solicitud y la orden del egreso.' }
+        '403': { description: El pedido no es para esta cuenta. }
+        '409': { description: El pedido ya está resuelto. }
+        '422': { description: No alcanza el saldo. }
+
+  /solicitudes/{referencia}/rechazar:
+    post:
+      tags: [operaciones]
+      summary: Rechazar un pedido de plata
+      operationId: rechazarSolicitud
+      parameters:
+        - { name: referencia, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cuenta_id]
+              properties:
+                cuenta_id: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: La solicitud, `rechazada`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Solicitud' }
+        '403': { description: El pedido no es para esta cuenta. }
+        '409': { description: El pedido ya está resuelto. }
+
   /egresos:
     post:
       tags: [operaciones]
@@ -402,10 +539,19 @@ paths:
           application/json:
             schema:
               type: object
-              required: [origen_id, cbu_destino, monto_centavos]
+              required: [origen_id, monto_centavos]
               properties:
                 origen_id: { type: integer, format: int64 }
-                cbu_destino: { type: string }
+                alias_destino:
+                  type: string
+                  description: En lugar de `cbu_destino`, un alias que se resuelve como en `GET /destinos/{clave}`.
+                cbu_destino:
+                  type: string
+                  pattern: '^[0-9]{22}$'
+                  description: |
+                    CBU o CVU de 22 números con dígitos verificadores válidos. Si es el CVU de
+                    una cuenta de núcleo (de este despliegue o de otro que use el mismo banco),
+                    la transferencia se le acredita a esa cuenta en la conciliación.
                 monto_centavos: { type: integer, format: int64, minimum: 1 }
       responses:
         '200':
@@ -821,6 +967,10 @@ paths:
 
         El caso `99` es el importante: el dinero salió y el que llamó no se enteró. Deja la
         orden `en_duda` del lado del núcleo y sólo se resuelve consultando.
+
+        Si `cbu` es un CVU (empieza con `000`) y el egreso se acredita, el banco registra
+        además el crédito para la entidad dueña de ese CVU: es lo que esa entidad ve en
+        `GET /servicio-mock/movimientos?entidad=…` y acredita en la cuenta al conciliar.
       operationId: mockOrdenarEgreso
       parameters: [{ $ref: '#/components/parameters/ClaveMock' }]
       requestBody:
@@ -832,8 +982,10 @@ paths:
               required: [referencia, cbu, monto_centavos]
               properties:
                 referencia: { type: string }
-                cbu: { type: string }
+                cbu: { type: string, description: Una CBU o un CVU con dígitos verificadores inválidos se rechaza. }
                 monto_centavos: { type: integer, format: int64 }
+                cbu_origen: { type: string, description: El CVU de la cuenta que paga. }
+                nombre_origen: { type: string, description: El alias de la cuenta que paga. }
       responses:
         '200':
           description: Resuelto (`acreditado` o `rechazado`).
@@ -885,10 +1037,14 @@ paths:
       tags: [servicio-mock]
       security: []
       summary: (Mock) Créditos de la cuenta recaudadora
-      description: Lo que lee la conciliación de ingresos. Pagina por cursor numérico.
+      description: |
+        Lo que lee la conciliación de ingresos. Pagina por cursor numérico. Con `entidad`,
+        sólo los créditos de esa entidad: los depósitos que registró y las transferencias a
+        sus CVU.
       operationId: mockMovimientos
       parameters:
         - { name: desde, in: query, schema: { type: integer, default: 0 } }
+        - { name: entidad, in: query, schema: { type: string, pattern: '^[0-9]{4}$' } }
         - $ref: '#/components/parameters/ClaveMock'
       responses:
         '200': { description: Página de movimientos y cursor siguiente. }
@@ -919,10 +1075,127 @@ paths:
                 referencia: { type: string }
                 monto_centavos: { type: integer, format: int64, minimum: 1 }
                 ocurrido_en: { type: string, format: date-time }
+                entidad: { type: string, description: La entidad que lo va a conciliar. }
+                cvu_destino: { type: string, description: Si viene, el depósito es para ese CVU y la entidad sale de él. }
+                cbu_origen: { type: string }
+                nombre_origen: { type: string }
       responses:
         '201': { description: Registrado. }
         '400': { description: Cuerpo inválido o monto no positivo. }
         '401': { $ref: '#/components/responses/MockNoAutorizado' }
+
+  /servicio-mock/alias:
+    put:
+      tags: [servicio-mock]
+      security: []
+      summary: (Mock) Publicar los alias de una entidad
+      description: |
+        Cada despliegue publica acá el alias y el CVU de sus cuentas, para que el otro pueda
+        transferirles por alias. Un alias que ya es de otra entidad no se pisa: vuelve en
+        `ocupados`.
+      operationId: mockPublicarAlias
+      parameters: [{ $ref: '#/components/parameters/ClaveMock' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entidad, cuentas]
+              properties:
+                entidad: { type: string, pattern: '^[0-9]{4}$' }
+                billetera: { type: string, description: 'El prefijo de los alias. Un nombre que ya usa otra entidad da 409.' }
+                cuentas:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      alias: { type: string }
+                      cvu: { type: string }
+      responses:
+        '200': { description: Cuántos se publicaron y cuáles estaban ocupados. }
+        '400': { description: 'Un CVU que no es de la entidad, o un alias sin el prefijo de la billetera.' }
+        '409': { description: El nombre de billetera ya es de otra entidad. }
+        '401': { $ref: '#/components/responses/MockNoAutorizado' }
+
+  /servicio-mock/cuentas/{clave}:
+    get:
+      tags: [servicio-mock]
+      security: []
+      summary: (Mock) Buscar una cuenta por alias o CVU
+      operationId: mockBuscarCuenta
+      parameters:
+        - { name: clave, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/ClaveMock'
+      responses:
+        '200': { description: 'Alias, CVU y entidad.' }
+        '404': { description: No está publicada. }
+        '401': { $ref: '#/components/responses/MockNoAutorizado' }
+
+  /servicio-mock/solicitudes:
+    post:
+      tags: [servicio-mock]
+      security: []
+      summary: (Mock) Registrar un pedido de cobro
+      description: Idempotente por `referencia`.
+      operationId: mockCrearSolicitud
+      parameters: [{ $ref: '#/components/parameters/ClaveMock' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Solicitud' }
+      responses:
+        '201': { description: Registrada, o la que ya existía con esa referencia. }
+        '400': { description: CVU inválidos o monto no positivo. }
+    get:
+      tags: [servicio-mock]
+      security: []
+      summary: (Mock) Pedidos de un pagador o de un cobrador
+      operationId: mockListarSolicitudes
+      parameters:
+        - { name: cvu_pagador, in: query, schema: { type: string } }
+        - { name: cvu_cobrador, in: query, schema: { type: string } }
+        - { name: estado, in: query, schema: { type: string, enum: [pendiente, aceptada, rechazada] } }
+        - $ref: '#/components/parameters/ClaveMock'
+      responses:
+        '200': { description: Los últimos 20. }
+
+  /servicio-mock/solicitudes/{referencia}:
+    get:
+      tags: [servicio-mock]
+      security: []
+      summary: (Mock) Ver un pedido de cobro
+      operationId: mockVerSolicitud
+      parameters:
+        - { name: referencia, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/ClaveMock'
+      responses:
+        '200': { description: El pedido. }
+        '404': { description: No existe. }
+
+  /servicio-mock/solicitudes/{referencia}/resolver:
+    post:
+      tags: [servicio-mock]
+      security: []
+      summary: (Mock) Marcar un pedido como aceptado o rechazado
+      description: Sólo cambia un pedido `pendiente`; si ya estaba resuelto, devuelve cómo quedó.
+      operationId: mockResolverSolicitud
+      parameters:
+        - { name: referencia, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/ClaveMock'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [estado]
+              properties:
+                estado: { type: string, enum: [aceptada, rechazada] }
+                motivo: { type: string }
+      responses:
+        '200': { description: El pedido. }
 
   /servicio-mock/health:
     get:
@@ -1060,6 +1333,11 @@ components:
                 Sólo las cuentas internas. Su saldo negativo es dinero en tránsito, no un
                 descubierto; por eso la validación de fondos vive en la aplicación y no en
                 un CHECK sobre la tabla de saldos.
+            cvu:
+              type: string
+              description: |
+                22 números: `000`, los 4 de la entidad (salen del nombre de `BILLETERA`), un verificador, el id
+                de la cuenta en 13 números y otro verificador. Las internas no tienen.
             saldo_centavos: { type: integer, format: int64 }
             limite_por_operacion_centavos: { type: integer, format: int64 }
             operaciones_ultimo_mes: { type: integer, format: int64 }
@@ -1076,11 +1354,27 @@ components:
         origen_id: { type: integer, format: int64 }
         destino_id: { type: integer, format: int64 }
         cbu_destino: { type: string }
+        cbu_origen: { type: string, description: En un ingreso por CVU, el CVU de quien pagó. }
+        nombre_origen: { type: string, description: En un ingreso por CVU, el alias de quien pagó. }
         monto_centavos: { type: integer, format: int64 }
         motivo: { type: string }
         creada_en: { type: string, format: date-time }
         actualizada_en: { type: string, format: date-time }
         _links: { $ref: '#/components/schemas/Enlaces' }
+
+    Solicitud:
+      type: object
+      properties:
+        referencia: { type: string, example: SOL-K3V7Q2MZXA }
+        cvu_pagador: { type: string }
+        alias_pagador: { type: string, example: sur.beto }
+        cvu_cobrador: { type: string }
+        alias_cobrador: { type: string, example: norte.ana }
+        monto_centavos: { type: integer, format: int64 }
+        estado: { type: string, enum: [pendiente, aceptada, rechazada] }
+        motivo: { type: string }
+        creada_en: { type: string, format: date-time }
+        resuelta_en: { type: string, format: date-time }
 
     Movimiento:
       type: object
@@ -1096,6 +1390,7 @@ components:
           type: string
           description: Qué paso de la operación asienta esta fila. Discrimina los pares de una misma orden.
         creado_en: { type: string, format: date-time }
+        nombre_origen: { type: string, description: En un ingreso por CVU, el alias de quien pagó. }
 
     ExtractoPeriodo:
       type: object

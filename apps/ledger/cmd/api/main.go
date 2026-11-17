@@ -113,6 +113,8 @@ func correr() error {
 		return err
 	}
 	svc.ConAvisos(titulares, cfg.AppURL)
+	svc.ConEntidad(cfg.Entidad).ConBilletera(cfg.Billetera)
+	slog.Info("CVU y alias de las cuentas", "entidad", cfg.Entidad, "billetera", cfg.Billetera)
 
 	exportaciones, err := cola.Nueva(arranque, cfg.Region, cfg.ExportacionesCola)
 	if err != nil {
@@ -133,6 +135,12 @@ func correr() error {
 			svc.AtenderExportaciones(ctx, 1)
 		}()
 	}
+
+	conciliando := make(chan struct{})
+	go func() {
+		defer close(conciliando)
+		svc.ConciliarSiempre(ctx)
+	}()
 
 	simulado := mock.Nuevo(pool, mock.Opciones{
 		Clave: cfg.MockClave, DemoraSinRespuesta: cfg.MockDemoraSinRespuesta})
@@ -197,9 +205,11 @@ func correr() error {
 		}
 
 		notif.Esperar(apagado)
-		select {
-		case <-exportando:
-		case <-limite:
+		for _, tarea := range []chan struct{}{exportando, conciliando} {
+			select {
+			case <-tarea:
+			case <-limite:
+			}
 		}
 	}()
 

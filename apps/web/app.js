@@ -360,7 +360,10 @@ async function arrancar() {
     mostrarAlta();
     return;
   }
-  fijarCuenta({ id: r.datos.cuenta_id, alias: r.datos.alias });
+  fijarCuenta({
+    id: r.datos.cuenta_id, alias: r.datos.alias, cvu: r.datos.cvu || '',
+    aliasPublico: r.datos.alias_publico || r.datos.alias, billetera: r.datos.billetera || '',
+  });
   entrar();
 }
 

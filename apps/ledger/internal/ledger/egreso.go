@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"ledger/internal/apierr"
+	"ledger/internal/cvu"
 	"ledger/internal/pg"
 	"ledger/internal/proveedor"
 )
@@ -18,6 +19,7 @@ type EntradaEgreso struct {
 	IdempotencyKey string
 	OrigenID       int64  `json:"origen_id"`
 	CBUDestino     string `json:"cbu_destino"`
+	AliasDestino   string `json:"alias_destino"`
 	MontoCentavos  int64  `json:"monto_centavos"`
 }
 
@@ -28,11 +30,24 @@ func (s *Servicio) Egresar(ctx context.Context, e EntradaEgreso) (o *Orden, err 
 	if e.MontoCentavos <= 0 {
 		return nil, apierr.Invalido("monto_centavos tiene que ser positivo")
 	}
+	if e.CBUDestino == "" && e.AliasDestino != "" {
+		d, err := s.BuscarDestino(ctx, e.AliasDestino, e.OrigenID)
+		if err != nil {
+			return nil, err
+		}
+		e.CBUDestino = d.CBU
+	}
 	if e.CBUDestino == "" {
-		return nil, apierr.Invalido("falta cbu_destino")
+		return nil, apierr.Invalido("falta cbu_destino o alias_destino")
+	}
+	if err := cvu.Validar(e.CBUDestino); err != nil {
+		return nil, apierr.Invalido("cbu_destino no es valida: %v", err)
 	}
 	if problema := s.rechazarInterna(e.OrigenID); problema != nil {
 		return nil, problema
+	}
+	if e.CBUDestino == s.CVU(e.OrigenID) {
+		return nil, apierr.Invalido("cbu_destino es el CVU de la misma cuenta de origen")
 	}
 
 	transitoria := s.interna(AliasTransitoriaEgresos)
@@ -110,6 +125,10 @@ func (s *Servicio) despachar(ctx context.Context, ordenID int64) (*Orden, error)
 	if err != nil {
 		return nil, err
 	}
+	var alias string
+	if err := s.pool.QueryRow(ctx, `SELECT alias FROM cuentas WHERE id = $1`, *o.OrigenID).Scan(&alias); err != nil {
+		return nil, err
+	}
 
 	aplicado, err := transicionar(ctx, s.pool, ordenID, EstadoReservada, EstadoEnviada, "")
 	if err != nil {
@@ -120,7 +139,13 @@ func (s *Servicio) despachar(ctx context.Context, ordenID int64) (*Orden, error)
 		return leerOrden(ctx, s.pool, ordenID)
 	}
 
-	resp, err := s.prov.OrdenarEgreso(ctx, o.Referencia, o.CBUDestino, o.MontoCentavos)
+	resp, err := s.prov.OrdenarEgreso(ctx, proveedor.PedidoEgreso{
+		Referencia:    o.Referencia,
+		CBU:           o.CBUDestino,
+		MontoCentavos: o.MontoCentavos,
+		CBUOrigen:     s.CVU(*o.OrigenID),
+		NombreOrigen:  s.AliasPublico(alias),
+	})
 	if err != nil {
 
 		if pe, rechazo := proveedor.EsRechazo(err); rechazo {

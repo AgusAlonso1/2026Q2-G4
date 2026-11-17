@@ -9,10 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ledger/internal/cvu"
 )
 
 const (
@@ -72,11 +75,21 @@ type Egreso struct {
 	Motivo        string `json:"motivo,omitempty"`
 }
 
+type pedidoEgreso struct {
+	Egreso
+	CBUOrigen    string `json:"cbu_origen"`
+	NombreOrigen string `json:"nombre_origen"`
+}
+
 type Movimiento struct {
 	IDOrigen      string    `json:"id_origen"`
 	Referencia    string    `json:"referencia"`
 	MontoCentavos int64     `json:"monto_centavos"`
 	OcurridoEn    time.Time `json:"ocurrido_en"`
+	Entidad       string    `json:"entidad,omitempty"`
+	CVUDestino    string    `json:"cvu_destino,omitempty"`
+	CBUOrigen     string    `json:"cbu_origen,omitempty"`
+	NombreOrigen  string    `json:"nombre_origen,omitempty"`
 }
 
 func (s *Servicio) Registrar(mux *http.ServeMux) {
@@ -88,6 +101,125 @@ func (s *Servicio) Registrar(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+Prefijo+"/movimientos", s.protegido(s.listarMovimientos))
 	mux.HandleFunc("POST "+Prefijo+"/depositos", s.protegido(s.registrarDeposito))
 	mux.HandleFunc("GET "+Prefijo+"/pedidos", s.protegido(s.listarPedidos))
+	mux.HandleFunc("PUT "+Prefijo+"/alias", s.protegido(s.publicarAlias))
+	mux.HandleFunc("GET "+Prefijo+"/cuentas/{clave}", s.protegido(s.buscarCuenta))
+	s.registrarSolicitudes(mux)
+}
+
+type CuentaAlias struct {
+	Alias     string `json:"alias"`
+	CVU       string `json:"cvu"`
+	Entidad   string `json:"entidad"`
+	Billetera string `json:"billetera,omitempty"`
+}
+
+func (s *Servicio) publicarAlias(w http.ResponseWriter, r *http.Request) {
+	var pedido struct {
+		Entidad   string        `json:"entidad"`
+		Billetera string        `json:"billetera"`
+		Cuentas   []CuentaAlias `json:"cuentas"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&pedido); err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !cvu.EntidadValida(pedido.Entidad) {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "entidad tiene que ser de 4 digitos"})
+		return
+	}
+	if !cvu.BilleteraValida(pedido.Billetera) {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "billetera tiene que ser de 2 a 15 letras minusculas o numeros"})
+		return
+	}
+	prefijo := pedido.Billetera + "."
+	for _, c := range pedido.Cuentas {
+		entidad, _, ok := cvu.Partes(c.CVU)
+		if !strings.HasPrefix(c.Alias, prefijo) || len(c.Alias) == len(prefijo) {
+			escribir(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("el alias %q no empieza con %q", c.Alias, prefijo)})
+			return
+		}
+		if !ok || entidad != pedido.Entidad {
+			escribir(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("la cuenta %q no tiene un CVU de la entidad %s", c.Alias, pedido.Entidad)})
+			return
+		}
+	}
+
+	ocupados := []string{}
+	conflicto := ""
+	err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
+		ocupados = ocupados[:0]
+		var entidad, billetera string
+		err := tx.QueryRow(r.Context(), `
+			SELECT entidad, billetera FROM mock_entidades
+			WHERE (billetera = $1) <> (entidad = $2)
+			LIMIT 1`, pedido.Billetera, pedido.Entidad).Scan(&entidad, &billetera)
+		if err == nil {
+			conflicto = fmt.Sprintf("la entidad %s ya es de la billetera %q: elegi otro nombre de billetera", entidad, billetera)
+			if billetera == pedido.Billetera {
+				conflicto = fmt.Sprintf("la billetera %q ya es de la entidad %s", billetera, entidad)
+			}
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.Exec(r.Context(), `
+			INSERT INTO mock_entidades (entidad, billetera) VALUES ($1, $2)
+			ON CONFLICT (entidad) DO NOTHING`,
+			pedido.Entidad, pedido.Billetera); err != nil {
+			return err
+		}
+		for _, c := range pedido.Cuentas {
+			if _, err := tx.Exec(r.Context(),
+				`DELETE FROM mock_alias WHERE cvu = $1 AND alias <> $2`, c.CVU, c.Alias); err != nil {
+				return err
+			}
+			tag, err := tx.Exec(r.Context(), `
+				INSERT INTO mock_alias (alias, cvu, entidad) VALUES ($1, $2, $3)
+				ON CONFLICT (alias) DO UPDATE SET cvu = EXCLUDED.cvu, actualizado_en = now()
+				WHERE mock_alias.entidad = EXCLUDED.entidad`,
+				c.Alias, c.CVU, pedido.Entidad)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 {
+				ocupados = append(ocupados, c.Alias)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if conflicto != "" {
+		escribir(w, http.StatusConflict, map[string]string{"error": conflicto})
+		return
+	}
+	escribir(w, http.StatusOK, map[string]any{
+		"publicados": len(pedido.Cuentas) - len(ocupados),
+		"ocupados":   ocupados,
+	})
+}
+
+func (s *Servicio) buscarCuenta(w http.ResponseWriter, r *http.Request) {
+	var c CuentaAlias
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT a.alias, a.cvu, a.entidad, coalesce(e.billetera, '')
+		FROM mock_alias a LEFT JOIN mock_entidades e ON e.entidad = a.entidad
+		WHERE a.alias = $1 OR a.cvu = $1`,
+		r.PathValue("clave")).Scan(&c.Alias, &c.CVU, &c.Entidad, &c.Billetera)
+	if errors.Is(err, pgx.ErrNoRows) {
+		escribir(w, http.StatusNotFound, map[string]string{"error": "no hay ninguna cuenta con ese alias o CVU"})
+		return
+	}
+	if err != nil {
+		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	escribir(w, http.StatusOK, c)
 }
 
 func (s *Servicio) listarPedidos(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +266,7 @@ func (s *Servicio) listarPedidos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Servicio) ordenarEgreso(w http.ResponseWriter, r *http.Request) {
-	var e Egreso
+	var e pedidoEgreso
 	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -146,18 +278,36 @@ func (s *Servicio) ordenarEgreso(w http.ResponseWriter, r *http.Request) {
 
 	estado, motivo := "acreditado", ""
 	muda := false
-	switch e.MontoCentavos % 100 {
-	case centavosRechazo:
+	switch {
+	case cvu.Validar(e.CBU) != nil:
+		estado, motivo = "rechazado", "la CBU o el CVU de destino no es valido"
+	case e.MontoCentavos%100 == centavosRechazo:
 		estado, motivo = "rechazado", "cuenta de destino inexistente"
-	case centavosSinRespuesta:
+	case e.MontoCentavos%100 == centavosSinRespuesta:
 		muda = true
 	}
+	entidad, _, esCVU := cvu.Partes(e.CBU)
 
-	if _, err := s.pool.Exec(r.Context(), `
-		INSERT INTO mock_egresos (referencia, cbu, monto_centavos, estado, motivo, muda)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6)
-		ON CONFLICT (referencia) DO NOTHING`,
-		e.Referencia, e.CBU, e.MontoCentavos, estado, motivo, muda); err != nil {
+	err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(r.Context(), `
+			INSERT INTO mock_egresos (referencia, cbu, monto_centavos, estado, motivo, muda)
+			VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6)
+			ON CONFLICT (referencia) DO NOTHING`,
+			e.Referencia, e.CBU, e.MontoCentavos, estado, motivo, muda)
+		if err != nil || tag.RowsAffected() == 0 || estado != "acreditado" || !esCVU {
+			return err
+		}
+
+		_, err = tx.Exec(r.Context(), `
+			INSERT INTO mock_movimientos (id_origen, referencia, monto_centavos, entidad,
+			                              cvu_destino, cbu_origen, nombre_origen)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''))
+			ON CONFLICT (id_origen) DO NOTHING`,
+			"TRF-"+e.Referencia, e.Referencia, e.MontoCentavos, entidad,
+			e.CBU, e.CBUOrigen, e.NombreOrigen)
+		return err
+	})
+	if err != nil {
 		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -226,8 +376,12 @@ func (s *Servicio) listarMovimientos(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filas, err := s.pool.Query(r.Context(), `
-		SELECT id, id_origen, coalesce(referencia, ''), monto_centavos, ocurrido_en
-		FROM mock_movimientos WHERE id > $1 ORDER BY id LIMIT 500`, desde)
+		SELECT id, id_origen, coalesce(referencia, ''), monto_centavos, ocurrido_en,
+		       coalesce(entidad, ''), coalesce(cvu_destino, ''), coalesce(cbu_origen, ''),
+		       coalesce(nombre_origen, '')
+		FROM mock_movimientos
+		WHERE id > $1 AND ($2 = '' OR entidad = $2)
+		ORDER BY id LIMIT 500`, desde, r.URL.Query().Get("entidad"))
 	if err != nil {
 		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -239,7 +393,8 @@ func (s *Servicio) listarMovimientos(w http.ResponseWriter, r *http.Request) {
 	for filas.Next() {
 		var m Movimiento
 		var id int64
-		if err := filas.Scan(&id, &m.IDOrigen, &m.Referencia, &m.MontoCentavos, &m.OcurridoEn); err != nil {
+		if err := filas.Scan(&id, &m.IDOrigen, &m.Referencia, &m.MontoCentavos, &m.OcurridoEn,
+			&m.Entidad, &m.CVUDestino, &m.CBUOrigen, &m.NombreOrigen); err != nil {
 			escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -267,6 +422,14 @@ func (s *Servicio) registrarDeposito(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "monto_centavos tiene que ser positivo"})
 		return
 	}
+	if m.CVUDestino != "" {
+		entidad, _, ok := cvu.Partes(m.CVUDestino)
+		if !ok {
+			escribir(w, http.StatusBadRequest, map[string]string{"error": "cvu_destino no es un CVU valido"})
+			return
+		}
+		m.Entidad = entidad
+	}
 	if m.OcurridoEn.IsZero() {
 		m.OcurridoEn = time.Now().UTC()
 	}
@@ -279,8 +442,9 @@ func (s *Servicio) registrarDeposito(w http.ResponseWriter, r *http.Request) {
 	nuevo := true
 	err := s.pool.QueryRow(r.Context(), `
 		WITH insertado AS (
-			INSERT INTO mock_movimientos (id_origen, referencia, monto_centavos, ocurrido_en)
-			VALUES ($1, NULLIF($2, ''), $3, $4)
+			INSERT INTO mock_movimientos (id_origen, referencia, monto_centavos, ocurrido_en,
+			                              entidad, cvu_destino, cbu_origen, nombre_origen)
+			VALUES ($1, NULLIF($2, ''), $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''))
 			ON CONFLICT (id_origen) DO NOTHING
 			RETURNING id_origen, referencia, monto_centavos, ocurrido_en, TRUE AS nuevo
 		)
@@ -289,7 +453,8 @@ func (s *Servicio) registrarDeposito(w http.ResponseWriter, r *http.Request) {
 		SELECT id_origen, referencia, monto_centavos, ocurrido_en, FALSE
 		FROM mock_movimientos WHERE id_origen = $1
 		LIMIT 1`,
-		m.IDOrigen, m.Referencia, m.MontoCentavos, m.OcurridoEn).
+		m.IDOrigen, m.Referencia, m.MontoCentavos, m.OcurridoEn,
+		m.Entidad, m.CVUDestino, m.CBUOrigen, m.NombreOrigen).
 		Scan(&guardado.IDOrigen, &referencia, &guardado.MontoCentavos, &guardado.OcurridoEn, &nuevo)
 	if err != nil {
 		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

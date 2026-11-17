@@ -24,6 +24,7 @@ env:
   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
   AWS_REGION: us-east-1
   TF_VAR_proveedor_url: ${{ vars.PROVEEDOR_URL }}
+  TF_VAR_billetera: ${{ vars.BILLETERA }}
   TF_VAR_proveedor_api_key: ${{ secrets.PROVEEDOR_API_KEY }}
   TF_VAR_mock_api_key: ${{ secrets.MOCK_API_KEY }}
   TF_VAR_webhook_url: ${{ vars.WEBHOOK_URL }}

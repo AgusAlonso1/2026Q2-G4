@@ -13,12 +13,14 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ![Diagrama de arquitectura en AWS](img/arquitectura.png)
 
-**Flujo de datos:**
+**Flujo de datos.** Cada paso tiene su número en el diagrama. Las flechas negras son tráfico; las
+grises punteadas, la réplica de RDS y la plataforma: el agente de ECS, los secretos de las
+Lambdas y el deploy.
 
 1. El navegador baja el frontend del bucket público de S3 (`website_url`) y su `config.json`,
    que Terraform genera con las URL de la API y del login.
-2. El login pasa por la Hosted UI de Cognito, que vuelve a un callback HTTPS en API Gateway: una
-   Lambda canjea el `code` por tokens y redirige al frontend con ellos.
+2. El login pasa por AWS WAF y la Hosted UI de Cognito, que vuelve a un callback HTTPS en API
+   Gateway: una Lambda canjea el `code` por tokens y redirige al frontend con ellos.
 3. El frontend llama a la API con el access token por el NLB público. El NLB reparte entre las
    tareas de la API, que corren en ECS sobre EC2 en las subredes de `app` de las dos AZ.
 4. La API valida el token contra Cognito y liquida cada operación en RDS PostgreSQL Multi-AZ, en

@@ -77,6 +77,11 @@ resource "aws_wafv2_web_acl" "this" {
 resource "aws_wafv2_web_acl_association" "this" {
   resource_arn = var.resource_arn
   web_acl_arn  = aws_wafv2_web_acl.this.arn
+
+  # WAF tarda hasta ~25 minutos en ver un user pool recién creado; el provider reintenta hasta este timeout.
+  timeouts {
+    create = "30m"
+  }
 }
 
 resource "aws_cloudwatch_log_group" "this" {

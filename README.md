@@ -19,8 +19,9 @@ Lambdas y el deploy.
 
 1. El navegador baja el frontend del bucket público de S3 (`website_url`) y su `config.json`,
    que Terraform genera con las URL de la API y del login.
-2. El login pasa por AWS WAF y la Hosted UI de Cognito, que vuelve a un callback HTTPS en API
-   Gateway: una Lambda canjea el `code` por tokens y redirige al frontend con ellos.
+2. El login pasa por la Hosted UI de Cognito, con AWS WAF delante (límite de pedidos por IP y
+   reglas administradas de AWS). Cognito vuelve a un callback HTTPS en API Gateway: una Lambda
+   canjea el `code` por tokens y redirige al frontend con ellos.
 3. El frontend llama a la API con el access token por el NLB público. El NLB reparte entre las
    tareas de la API, que corren en ECS sobre EC2 en las subredes de `app` de las dos AZ.
 4. La API valida el token contra Cognito y liquida cada operación en RDS PostgreSQL Multi-AZ, en
@@ -223,7 +224,7 @@ tienen valores por defecto y se pueden cambiar igual; están, con sus defaults, 
 |---|---|---|
 | **Terraform** | En cada pull request, o a mano | `fmt -check`, `init -backend=false` y `validate` (sin AWS); después `init` y `plan` contra la cuenta. El resultado del plan queda en el resumen del run |
 | **Deploy** | A mano, escribiendo `deploy` | `make imagen` (construye la imagen del backend y la sube a ECR; el tag es el hash de `apps/ledger`, así que sólo cambia si cambia el backend), `make plan` y `make apply`. Las URL del despliegue quedan en el resumen del run |
-| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después los buckets (archivo, frontend y state) |
+| **Destroy** | A mano, escribiendo `destroy` | `terraform destroy` de toda la infraestructura y después los buckets (archivo, frontend, logs y state) |
 
 Deploy y Destroy comparten un grupo de `concurrency`: nunca corren a la vez sobre el mismo state.
 
@@ -299,13 +300,18 @@ Después, entrar por `website_url`:
    que fija la API (`SALDO_BIENVENIDA_CENTAVOS`) y se asienta contra la cuenta interna de
    ajustes: el cliente no puede elegir con cuánto abre su cuenta.
 3. La billetera:
-   - **Inicio**: saldo (se puede ocultar), alias para compartir y movimientos recientes.
+   - **Inicio**: saldo (se puede ocultar), alias y CVU para compartir, movimientos recientes y
+     los pedidos de plata recibidos, con *Pagar* y *Rechazar*.
    - **Enviar**: elegir a quién (con buscador), el monto (valida contra el saldo) y confirmar.
    - **Ingresar**: el monto y un código para usar como concepto de la transferencia; *Ya hice
-     la transferencia* simula el aviso del banco.
-   - **Retirar**: CBU o CVU de 22 dígitos, el monto y confirmar. Sale por el proveedor: un
+     la transferencia* simula el aviso del banco. Desde acá también se le pide plata a otra
+     cuenta.
+   - **Retirar**: CBU o CVU de 22 dígitos, o un alias (`billetera.nombre`), el monto y
+     confirmar; antes de confirmar muestra a quién le llega. Sale por el proveedor: un
      monto terminado en 13 centavos lo rechaza y uno terminado en 99 queda *en revisión* hasta
-     que la API lo resuelve por consulta.
+     que la API lo resuelve por consulta. Un retiro al CVU o al alias de una cuenta de núcleo le
+     llega a esa cuenta (ver
+     [Transferir entre los dos despliegues](#transferir-entre-los-dos-despliegues)).
    - **Actividad**: mes por mes, con lo que entró, lo que salió y un filtro; el resumen de un
      mes archivado lo arma la API desde S3.
    - Cada operación tiene su comprobante, con el número de operación y su estado.
@@ -426,6 +432,20 @@ Después, entrar por `website_url`:
    volver a OK. Las consultas guardadas están en **CloudWatch → Logs Insights → Saved queries**,
    bajo `ledger/`.
 
+   **WAF.** En **WAF & Shield → Web ACLs** (región `us-east-1`) → `ledger-cognito` se ven los
+   pedidos al login permitidos y bloqueados por cada regla, y una muestra de pedidos con la regla
+   que los evaluó. El log de cada pedido queda en el log group `aws-waf-logs-ledger-cognito`, con
+   unos minutos de demora. Para ver el límite por IP, recargar la Hosted UI más de 100 veces en
+   5 minutos: WAF responde 403 hasta que la IP baja del límite (el conteo se actualiza con unos
+   segundos de demora, así que el bloqueo puede llegar algunos pedidos después). En AWS Academy
+   la pestaña de recursos asociados de la web ACL da *AccessDenied*; la asociación con el user
+   pool se ve por CLI:
+
+   ```bash
+   aws wafv2 list-resources-for-web-acl --resource-type COGNITO_USER_POOL \
+     --web-acl-arn $(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Name=='ledger-cognito'].ARN" --output text)
+   ```
+
    Para ver el escalado en vivo, `make pico` sube el mínimo de la API a 4 tareas: en el dashboard
    se ven las tareas deseadas, después las que corren y, si no hay lugar, la instancia nueva.
    `make pico-fin` lo devuelve a 2. Llevar la CPU al 60 % con carga de afuera es difícil: la
@@ -486,15 +506,15 @@ lectura cada vez que lee un `aws_s3_bucket`, después de crearlo y en cada refre
 ningún argumento para saltearla: el bucket se crea, pero el apply falla y el recurso queda
 *tainted*. Por eso el bucket lo crea la CLI, y Terraform administra todo lo demás con los
 recursos que no leen el object lock: versionado, cifrado, bloqueo de acceso público, política,
-lifecycle, website y los objetos. Los módulos `storage` y `website` arman el mismo nombre que el
-script.
+lifecycle, website y los objetos. Los módulos `storage`, `website` y `audit` arman el mismo nombre
+que el script.
 
 **El bucket del state** se crea aparte por otro motivo: el backend S3 tiene que existir antes de
 `terraform init`, así que no puede ser un recurso del mismo state (ver
 [Estado](ARCHITECTURE.md#9-estado)).
 
-`make destroy` (y el workflow **Destroy**) borra los tres buckets con todas sus versiones, pero
-sólo cuando `terraform destroy` dejó el state vacío. En una cuenta sin ese SCP, los dos buckets
+`make destroy` (y el workflow **Destroy**) borra los cuatro buckets con todas sus versiones, pero
+sólo cuando `terraform destroy` dejó el state vacío. En una cuenta sin ese SCP, los tres buckets
 del proyecto serían un `aws_s3_bucket` dentro de cada módulo y el script sólo crearía el del
 state.
 
@@ -592,6 +612,22 @@ access log JSON por request a su propio log group.
 **Recursos:** `aws_cognito_user_pool.this`, `aws_cognito_user_pool_domain.this`,
 `aws_cognito_user_pool_client.this`, `aws_secretsmanager_secret.client`,
 `aws_lambda_function.callback`, `aws_apigatewayv2_api.this` y sus rutas, integración y stage.
+
+---
+
+### [`modules/waf`](terraform/modules/waf)
+
+Web ACL de AWS WAF asociada al user pool de Cognito: filtra los pedidos a la Hosted UI y a los
+endpoints de OAuth antes de que lleguen al login. Bloquea una IP que pasa `rate_limit` pedidos
+(100 por defecto) en 5 minutos y aplica tres grupos de reglas administradas de AWS: IPs con mala
+reputación, entradas maliciosas conocidas y el conjunto común (OWASP). Los pedidos evaluados
+quedan en el log group `aws-waf-logs-ledger-cognito`, cifrado con la clave del proyecto y sin las
+cabeceras `cookie` ni `authorization`. No cubre la API: un NLB no admite WAF (ver
+[Entrada: por qué un NLB](ARCHITECTURE.md#entrada-por-qué-un-nlb)).
+
+**Recursos:** `aws_wafv2_web_acl.this`, `aws_wafv2_web_acl_association.this`,
+`aws_cloudwatch_log_group.this`, `aws_cloudwatch_log_resource_policy.this` y
+`aws_wafv2_web_acl_logging_configuration.this`.
 
 ---
 
@@ -778,8 +814,10 @@ y, en Athena, el formato de `history_start`, los prefijos y el tope de bytes esc
 no acepta menos de 10 MiB). También que el escalado por cola tenga pasos y minutos enteros de al
 menos 1 y que la antigüedad que dispara la alarma de la cola de exportaciones sea de al menos
 20 minutos, lo que puede tardar en arrancar el exportador desde cero.
+En el WAF, el límite por IP (`rate_limit`), que WAF no acepta por debajo de 10.
 Están en `organization/variables.tf`, `modules/auth/variables.tf`, `modules/service/variables.tf`,
-`modules/capacity/variables.tf`, `modules/events/variables.tf` y `modules/analytics/variables.tf`,
+`modules/capacity/variables.tf`, `modules/events/variables.tf`, `modules/analytics/variables.tf` y
+`modules/waf/variables.tf`,
 y un valor inválido falla en el `plan`, no a mitad del apply. Lo que no es una variable, como la
 suma de los pools de conexiones, lo comprueba una `precondition`.
 
@@ -797,8 +835,8 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 | Data source | Dónde | Para qué |
 |---|---|---|
 | `aws_availability_zones` | `organization/providers.tf` | Las AZ disponibles de la región |
-| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth`, `modules/monitoring`, `modules/audit` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints y de la clave KMS |
-| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service`, `modules/monitoring`, `modules/audit` | La región, sin pasarla como variable a cada módulo |
+| `aws_caller_identity` | `organization/providers.tf`, `modules/storage`, `modules/website`, `modules/auth`, `modules/monitoring`, `modules/audit`, `modules/waf` | La cuenta: va en los nombres de los buckets, en el dominio de Cognito y en las políticas de los endpoints, de la clave KMS y de los logs del WAF |
+| `aws_region` | `modules/storage`, `modules/website`, `modules/auth`, `modules/service`, `modules/monitoring`, `modules/audit`, `modules/waf` | La región, sin pasarla como variable a cada módulo |
 | `aws_iam_role`, `aws_iam_instance_profile` | `organization/providers.tf` | `LabRole` y `LabInstanceProfile`: AWS Academy no deja crear IAM. El ARN de `LabRole` también va en la política de la clave KMS |
 | `aws_ec2_instance_type` | `modules/capacity/main.tf` | La arquitectura del tipo de instancia (x86 o arm64) |
 | `aws_ssm_parameter` | `modules/capacity/main.tf` | La AMI optimizada para ECS recomendada para esa arquitectura, sin fijar un ID |
@@ -826,6 +864,7 @@ suma de los pools de conexiones, lo comprueba una `precondition`.
 │       ├── database/
 │       ├── load_balancer/
 │       ├── auth/          # Cognito + API Gateway + Lambda: callback HTTPS del login
+│       ├── waf/           # WAF delante del login de Cognito: límite por IP y reglas administradas
 │       ├── events/        # SNS, SQS con DLQ, Lambda del webhook y alertas
 │       ├── monitoring/    # CloudWatch: métricas del log de la API, alarmas, dashboard y consultas
 │       ├── audit/         # CloudTrail en el bucket de logs y presupuesto mensual

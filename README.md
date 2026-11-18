@@ -13,7 +13,9 @@ las entregas anteriores, está en [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ![Diagrama de arquitectura en AWS](img/arquitectura.png)
 
-**Flujo de datos:**
+**Flujo de datos.** Cada paso tiene su número en el diagrama. Las flechas negras son tráfico; las
+grises punteadas, la réplica de RDS y la plataforma: el agente de ECS, los secretos de las
+Lambdas y el deploy.
 
 1. El navegador baja el frontend del bucket público de S3 (`website_url`) y su `config.json`,
    que Terraform genera con las URL de la API y del login.

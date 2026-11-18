@@ -7,8 +7,9 @@ desplegarlo está en el [README](README.md).
 ## 1. Contexto
 
 El sistema es el núcleo transaccional de un PSP de una sola empresa. Cada usuario tiene una
-cuenta virtual con la que transfiere a otras cuentas del PSP, ingresa dinero desde su banco y
-lo retira hacia afuera a través de un proveedor de infraestructura financiera. Cada operación
+cuenta virtual, con su CVU y su alias, con la que transfiere a otras cuentas del PSP o, por CVU o
+alias, a las de otra billetera que use el mismo proveedor, ingresa dinero desde su banco y lo
+retira hacia afuera a través de un proveedor de infraestructura financiera. Cada operación
 se liquida dentro del mismo request, de forma idempotente, contra un ledger de partida doble.
 Lo único diferido es lo que ningún usuario espera en el momento: el archivado de los meses
 viejos a S3, el webhook de cada orden terminada, que sale por SNS y SQS después de responder, y
@@ -102,7 +103,10 @@ la base, para que una caída de la base no le haga sacar al NLB todas las tareas
 
 Lo que se resigna: la métrica de requests por target (`ALBRequestCountPerTarget`) sólo existe en
 un ALB, así que la API escala por CPU; y AWS WAF no se puede poner delante de un NLB (va en ALB,
-CloudFront o API Gateway), así que la validación de cada pedido queda en la aplicación.
+CloudFront, API Gateway o Cognito), así que la validación de cada pedido a la API queda en la
+aplicación. El WAF del proyecto está delante del login de Cognito
+([`modules/waf`](terraform/modules/waf)): limita los pedidos por IP contra la fuerza bruta y
+aplica las reglas administradas de AWS.
 
 ## 3. Cómputo
 
@@ -511,7 +515,7 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
   key*, una clave de datos por bucket en lugar de una llamada a KMS por objeto), los resultados
   de Athena, el
   almacenamiento y los backups de RDS, las imágenes de ECR, los topics de SNS, las colas de
-  SQS y los logs de ECS, de las Lambdas y de API Gateway. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
+  SQS, los logs de ECS, de las Lambdas, de API Gateway y del WAF, y los de CloudTrail. Los discos raíz de las instancias de ECS se cifran con la clave de AWS para
   EBS (`aws/ebs`) y no con la del proyecto: para que Auto Scaling lance instancias con discos
   cifrados con una clave propia, su rol de servicio tendría que figurar en la política de la
   clave.
@@ -519,7 +523,8 @@ rotarlas y poder retirar una clave comprometida. Por eso hay una clave propia, `
   inadministrable), al `LabRole`, sólo para las operaciones de cifrado (nombrado explícitamente
   para no depender de lo que permita su política de IAM en el laboratorio), a CloudWatch Logs,
   limitado a los log groups de la cuenta, y a SNS y CloudWatch, sólo para cifrar y descifrar:
-  SNS escribe en la cola cifrada y CloudWatch publica las alarmas en el topic cifrado. El permiso de la cuenta delega en
+  SNS escribe en la cola cifrada y CloudWatch publica las alarmas en el topic cifrado. También
+  nombra a CloudTrail, sólo para los trails de la cuenta. El permiso de la cuenta delega en
   IAM, y la política de IAM del `LabRole` es amplia: en la práctica también puede administrar y
   borrar la clave (ver [Trade-offs](#10-trade-offs)).
 - **Rotación:** automática, anual. KMS conserva las versiones anteriores, así que lo cifrado
@@ -698,7 +703,7 @@ nuevo y Destroy no tendría qué destruir.
   `-backend-config`. Por eso [`backend.tf`](terraform/organization/backend.tf) no tiene
   `bucket`.
 - **El nombre lleva la cuenta**, en el namespace regional de la cuenta (`-an`), igual que los
-  otros dos buckets: el mismo código despliega en cualquier cuenta sin editar nada, y nadie
+  otros tres buckets: el mismo código despliega en cualquier cuenta sin editar nada, y nadie
   más puede ocupar ese nombre.
 - **Lock:** `use_lockfile = true`, el lock nativo del backend S3 (Terraform >= 1.10). El
   esquema clásico, S3 más una tabla de DynamoDB para el lock, quedó deprecado desde Terraform
@@ -707,11 +712,11 @@ nuevo y Destroy no tendría qué destruir.
 - **Destroy lo borra al final**, con todas sus versiones, pero sólo si `terraform state list`
   quedó vacío: si el destroy falló a la mitad, el bucket queda para poder reintentar. El
   próximo `make init` (Deploy o el plan de un pull request) lo vuelve a crear.
-- **Los buckets del proyecto también los crea la CLI.** El del archivo y el del frontend no
-  son `aws_s3_bucket`: el SCP de AWS Academy niega `s3:GetBucketObjectLockConfiguration`, y el
+- **Los buckets del proyecto también los crea la CLI.** El del archivo, el del frontend y el de
+  logs no son `aws_s3_bucket`: el SCP de AWS Academy niega `s3:GetBucketObjectLockConfiguration`, y el
   provider de AWS lo lee cada vez que refresca un `aws_s3_bucket`, así que el apply no puede
   terminar. `make apply` los crea con el mismo script justo antes del `terraform apply` (el
-  `plan` de los pull requests no crea nada), y `storage` y `website` arman el mismo nombre y
+  `plan` de los pull requests no crea nada), y `storage`, `website` y `audit` arman el mismo nombre y
   configuran todo lo demás: versionado, cifrado, bloqueo público, política, lifecycle y
   website, que no leen el object lock. `make destroy` los vacía, con todas sus versiones, y los
   borra junto con el del state.
@@ -793,7 +798,7 @@ nuevo y Destroy no tendría qué destruir.
 |---|---|
 | ≥ 1 módulo externo | `terraform-aws-modules/vpc/aws ~> 6.7` en [`network.tf`](terraform/organization/network.tf) |
 | ≥ 1 módulo propio | `security_groups`, `storage`, `website`, `auth`, `waf`, `database`, `load_balancer`, `capacity`, `service`, `events`, `analytics`, `monitoring`, `audit` (13) |
-| ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `floor`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
+| ≥ 4 funciones | `cidrsubnet`, `slice`, `range`, `substr`, `ceil`, `sum`, `coalesce`, `concat`, `replace`, `try`, `format`, `jsonencode`, `toset`, `fileset`, `regex`, `filemd5`, `urlencode`, `templatefile`, `base64encode`, `sort`, `nonsensitive`, entre otras (ver el [README](README.md#funciones-utilizadas)) |
 | ≥ 3 meta-argumentos | `for_each`, `count`, `depends_on` y `lifecycle` (ver el [README](README.md#meta-argumentos-utilizados)) |
 | Variables y outputs | [`variables.tf`](terraform/organization/variables.tf) parametriza red, base, cómputo, proveedor y ventana del archivador; [`outputs.tf`](terraform/organization/outputs.tf) expone las URL y lo necesario para operar |
 | Pipeline (init, validate, plan, apply) | Workflows **Terraform** y **Deploy** en [`.github/workflows`](.github/workflows) |

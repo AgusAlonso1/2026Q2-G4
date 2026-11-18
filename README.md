@@ -258,7 +258,8 @@ los módulos ya se commitean generados con terraform-docs, así que no debería 
    ![Workflow Deploy: Run workflow con la confirmación deploy](img/deploy.png)
 
 2. Esperar el run en verde. El primer apply tarda más que los siguientes: RDS Multi-AZ sola
-   lleva varios minutos.
+   lleva varios minutos, y la asociación del WAF al user pool puede quedar reintentando más de
+   20 minutos, hasta que WAF ve el user pool recién creado.
 3. Abrir el resumen del run: tiene `website_url` (frontend), `api_url` y `login_url`.
 
    ![Resumen del run de Deploy con las URL del despliegue](img/resumen.png)
